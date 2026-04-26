@@ -216,25 +216,27 @@ func removeSession(runtimeName string) {
 }
 
 func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
-	var cmd *exec.Cmd
+	var cmdName string
+	var args []string
 	switch runtimeName {
 	case "copilot":
-		args := []string{}
-		if prompt != "" {
-			args = append(args, "-i", prompt)
-		}
-		args = append(args, "--yolo")
-		cmd = exec.Command("copilot", args...)
+		cmdName = "copilot"
 	case "gemini":
-		args := []string{}
-		if prompt != "" {
-			args = append(args, "-i", prompt)
-		}
-		args = append(args, "--yolo")
-		cmd = exec.Command("gemini", args...)
+		cmdName = "gemini"
 	default:
 		return nil, fmt.Errorf("unknown runtime: %s", runtimeName)
 	}
+
+	// Check if CLI exists
+	if _, err := exec.LookPath(cmdName); err != nil {
+		return nil, fmt.Errorf("%s CLI not found. Please install it first", cmdName)
+	}
+
+	if prompt != "" {
+		args = append(args, "-i", prompt)
+	}
+	args = append(args, "--yolo")
+	cmd := exec.Command(cmdName, args...)
 	return startPTY(cmd)
 }
 
@@ -281,6 +283,21 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(content))
+}
+
+func handleRuntimes(w http.ResponseWriter, r *http.Request) {
+	runtimes := []map[string]interface{}{}
+	for _, rt := range []struct{ name, cmd string }{
+		{"copilot", "copilot"},
+		{"gemini", "gemini"},
+	} {
+		_, err := exec.LookPath(rt.cmd)
+		runtimes = append(runtimes, map[string]interface{}{
+			"name":      rt.name,
+			"available": err == nil,
+		})
+	}
+	json.NewEncoder(w).Encode(runtimes)
 }
 
 func handleSessionWS(w http.ResponseWriter, r *http.Request) {
@@ -373,6 +390,7 @@ func main() {
 	http.HandleFunc("/api/ops", handleOps)
 	http.HandleFunc("/api/squads", handleSquads)
 	http.HandleFunc("/api/file", handleOpFile)
+	http.HandleFunc("/api/runtimes", handleRuntimes)
 	http.HandleFunc("/ws/session", handleSessionWS)
 
 	// Static files

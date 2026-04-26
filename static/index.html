@@ -395,10 +395,29 @@ async function updateStats() {
 loadSquads();
 loadOps();
 initTerminal();
-// Don't auto-connect session — user clicks "Connect" when needed
+loadRuntimes();
 
 // Poll active ops every 5s
 setInterval(loadOps, 5000);
+
+async function loadRuntimes() {
+  try {
+    const resp = await fetch('/api/runtimes');
+    const runtimes = await resp.json();
+    const select = document.getElementById('runtime-select');
+    select.innerHTML = '';
+    runtimes.forEach(rt => {
+      const opt = document.createElement('option');
+      opt.value = rt.name;
+      opt.textContent = rt.name + (rt.available ? '' : ' (not installed)');
+      opt.disabled = !rt.available;
+      select.appendChild(opt);
+    });
+    // Select first available
+    const first = runtimes.find(r => r.available);
+    if (first) select.value = first.name;
+  } catch(e) {}
+}
 </script>
 </body>
 </html>
