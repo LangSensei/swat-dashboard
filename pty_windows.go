@@ -1,4 +1,4 @@
-// +build windows
+//go:build windows
 
 package main
 
@@ -18,16 +18,38 @@ type platformPTY struct {
 	mu   sync.Mutex
 }
 
-func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
-	// On Windows, wrap through cmd.exe to resolve .cmd/.bat scripts
-	parts := make([]string, 0, len(cmd.Args)+2)
-	parts = append(parts, "cmd.exe", "/c")
-	for _, a := range cmd.Args {
-		if strings.ContainsAny(a, " \t\"") {
-			a = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
-		}
-		parts = append(parts, a)
+func quoteArg(a string) string {
+	if strings.ContainsAny(a, " \t\"") {
+		return `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
 	}
+	return a
+}
+
+func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
+	// Resolve the actual executable path
+	resolved, err := exec.LookPath(cmd.Args[0])
+	if err != nil {
+		resolved = cmd.Args[0]
+	}
+
+	var parts []string
+	lower := strings.ToLower(resolved)
+	isBatch := strings.HasSuffix(lower, ".cmd") || strings.HasSuffix(lower, ".bat")
+
+	if isBatch {
+		// .cmd/.bat: run via cmd.exe, but keep stdin alive
+		// Build: cmd.exe /c "full\path\copilot.cmd" -i "prompt" --yolo
+		parts = append(parts, "cmd.exe", "/c")
+		parts = append(parts, quoteArg(resolved))
+		for _, a := range cmd.Args[1:] {
+			parts = append(parts, quoteArg(a))
+		}
+	} else {
+		for _, a := range cmd.Args {
+			parts = append(parts, quoteArg(a))
+		}
+	}
+
 	cmdLine := strings.Join(parts, " ")
 	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(120, 30), conpty.ConPtyWorkDir(cmd.Dir))
 	if err != nil {
