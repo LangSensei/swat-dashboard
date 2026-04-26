@@ -181,8 +181,9 @@ function initTerminal() {
   });
 }
 
+let currentRuntime = null;
+
 function connectSession() {
-  // Show terminal, hide placeholder
   document.getElementById('terminal-placeholder').style.display = 'none';
   document.getElementById('terminal-inner').style.display = 'block';
   term.clear();
@@ -190,6 +191,7 @@ function connectSession() {
 
   const rt = document.getElementById('runtime-select').value;
   const prompt = document.getElementById('session-prompt').value.trim();
+  currentRuntime = rt;
   if (ws) ws.close();
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -222,7 +224,12 @@ function connectSession() {
   };
 }
 
-document.getElementById('runtime-select').addEventListener('change', connectSession);
+document.getElementById('runtime-select').addEventListener('change', () => {
+  // Switch to the other runtime's session (reconnect to existing PTY)
+  if (document.getElementById('terminal-inner').style.display !== 'none') {
+    connectSession();
+  }
+});
 
 // --- Tabs ---
 function showTab(name) {

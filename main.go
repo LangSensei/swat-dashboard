@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -182,7 +183,39 @@ func containsCI(s, sub string) bool {
 
 // --- PTY session ---
 
-func newPTYSession(runtimeName, prompt string) (*platformPTY, error) {
+// --- PTY session manager ---
+
+var (
+	sessions   = make(map[string]*platformPTY) // runtime -> PTY
+	sessionsMu sync.Mutex
+)
+
+func getOrCreateSession(runtimeName, prompt string) (*platformPTY, error) {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+
+	if sess, ok := sessions[runtimeName]; ok {
+		return sess, nil
+	}
+
+	sess, err := createPTYSession(runtimeName, prompt)
+	if err != nil {
+		return nil, err
+	}
+	sessions[runtimeName] = sess
+	return sess, nil
+}
+
+func removeSession(runtimeName string) {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+	if sess, ok := sessions[runtimeName]; ok {
+		sess.Close()
+		delete(sessions, runtimeName)
+	}
+}
+
+func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	var cmd *exec.Cmd
 	switch runtimeName {
 	case "copilot":
@@ -263,23 +296,28 @@ func handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sess, err := newPTYSession(rt, prompt)
+	sess, err := getOrCreateSession(rt, prompt)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %v", err)))
 		return
 	}
-	defer sess.Close()
+	// Note: don't defer sess.Close() — session persists across reconnects
 
 	// PTY → WebSocket
+	done := make(chan struct{})
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, err := sess.Read(buf)
 			if n > 0 {
-				conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					return
+				}
 			}
 			if err != nil {
 				conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Session ended]"))
+				removeSession(rt)
+				close(done)
 				return
 			}
 		}
@@ -287,9 +325,15 @@ func handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	// WebSocket → PTY
 	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			return
+			return // Client disconnected, but PTY stays alive
 		}
 
 		var resize struct {
