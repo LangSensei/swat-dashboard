@@ -19,8 +19,9 @@ type platformPTY struct {
 }
 
 func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
-	// Build Windows command line with proper quoting
-	parts := make([]string, 0, len(cmd.Args))
+	// On Windows, wrap through cmd.exe to resolve .cmd/.bat scripts
+	parts := make([]string, 0, len(cmd.Args)+2)
+	parts = append(parts, "cmd.exe", "/c")
 	for _, a := range cmd.Args {
 		if strings.ContainsAny(a, " \t\"") {
 			a = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
