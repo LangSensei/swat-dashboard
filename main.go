@@ -186,12 +186,12 @@ func newPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	var cmd *exec.Cmd
 	switch runtimeName {
 	case "copilot":
-		args := []string{"copilot"}
+		args := []string{}
 		if prompt != "" {
 			args = append(args, "-i", prompt)
 		}
 		args = append(args, "--yolo")
-		cmd = exec.Command("gh", args...)
+		cmd = exec.Command("copilot", args...)
 	case "gemini":
 		args := []string{}
 		if prompt != "" {
