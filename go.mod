@@ -8,9 +8,7 @@ require (
 )
 
 require (
-	github.com/LangSensei/swat v0.0.0
+	github.com/LangSensei/swat v1.1.3
 	github.com/UserExistsError/conpty v0.1.4
 	golang.org/x/sys v0.37.0 // indirect
 )
-
-replace github.com/LangSensei/swat => /tmp/swat
