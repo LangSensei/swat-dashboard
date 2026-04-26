@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LangSensei/swat/commander/operation"
 	"github.com/gorilla/websocket"
 )
 
@@ -31,7 +32,8 @@ var upgrader = websocket.Upgrader{
 
 // --- Operation model ---
 
-type Operation struct {
+// OpView is a lightweight UI view of an operation
+type OpView struct {
 	ID          string `json:"id"`
 	Squad       string `json:"squad"`
 	Status      string `json:"status"`
@@ -42,46 +44,56 @@ type Operation struct {
 	Elapsed     string `json:"elapsed,omitempty"`
 }
 
-// --- File-system scanner for history ---
-
-func swatHome() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".swat")
-}
-
-func scanOperations(squad, status, keyword string, limit, offset int) ([]Operation, int) {
-	squadsDir := filepath.Join(swatHome(), "squads")
-	var ops []Operation
-
-	squadDirs, _ := os.ReadDir(squadsDir)
-	for _, sd := range squadDirs {
-		if !sd.IsDir() {
-			continue
+func opToView(op *operation.Operation) OpView {
+	v := OpView{
+		ID:      op.OperationID,
+		Squad:   op.Squad,
+		Status:  op.Status,
+		Brief:   op.Brief,
+		Summary: op.Summary,
+	}
+	if !op.CreatedAt.IsZero() {
+		v.CreatedAt = op.CreatedAt.Format(time.RFC3339)
+	}
+	if op.CompletedAt != nil && !op.CompletedAt.IsZero() {
+		v.CompletedAt = op.CompletedAt.Format(time.RFC3339)
+	}
+	// Elapsed
+	if !op.CreatedAt.IsZero() {
+		end := time.Now()
+		if op.CompletedAt != nil && !op.CompletedAt.IsZero() {
+			end = *op.CompletedAt
 		}
-		if squad != "" && sd.Name() != squad {
-			continue
-		}
-		opsDir := filepath.Join(squadsDir, sd.Name(), "operations")
-		opDirs, _ := os.ReadDir(opsDir)
-		for _, od := range opDirs {
-			if !od.IsDir() {
-				continue
-			}
-			op := parseOperation(filepath.Join(opsDir, od.Name()), sd.Name())
-			if op == nil {
-				continue
-			}
-			if status != "" && op.Status != status {
-				continue
-			}
-			if keyword != "" && !containsCI(op.Brief, keyword) && !containsCI(op.Summary, keyword) {
-				continue
-			}
-			ops = append(ops, *op)
+		d := end.Sub(op.CreatedAt)
+		if d < time.Hour {
+			v.Elapsed = fmt.Sprintf("%dm", int(d.Minutes()))
+		} else {
+			v.Elapsed = fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 		}
 	}
+	return v
+}
 
-	// Sort by ID descending (newest first)
+func scanOperations(squad, status, keyword string, limit, offset int) ([]OpView, int) {
+	all, err := operation.List()
+	if err != nil {
+		return nil, 0
+	}
+
+	var ops []OpView
+	for _, op := range all {
+		if squad != "" && op.Squad != squad {
+			continue
+		}
+		if status != "" && op.Status != status {
+			continue
+		}
+		if keyword != "" && !containsCI(op.Brief, keyword) && !containsCI(op.Summary, keyword) {
+			continue
+		}
+		ops = append(ops, opToView(op))
+	}
+
 	sort.Slice(ops, func(i, j int) bool { return ops[i].ID > ops[j].ID })
 
 	total := len(ops)
@@ -95,86 +107,34 @@ func scanOperations(squad, status, keyword string, limit, offset int) ([]Operati
 	return ops, total
 }
 
-func parseOperation(dir, squad string) *Operation {
-	opFile := filepath.Join(dir, "OPERATION.md")
-	data, err := os.ReadFile(opFile)
-	if err != nil {
-		return nil
-	}
-	content := string(data)
-	op := &Operation{
-		ID:    filepath.Base(dir),
-		Squad: squad,
-	}
-
-	// Parse frontmatter-style fields
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "status:") {
-			op.Status = strings.TrimSpace(strings.TrimPrefix(line, "status:"))
-		}
-		if strings.HasPrefix(line, "brief:") {
-			op.Brief = strings.TrimSpace(strings.TrimPrefix(line, "brief:"))
-		}
-		if strings.HasPrefix(line, "summary:") {
-			op.Summary = strings.TrimSpace(strings.TrimPrefix(line, "summary:"))
-		}
-		if strings.HasPrefix(line, "created_at:") {
-			op.CreatedAt = strings.TrimSpace(strings.TrimPrefix(line, "created_at:"))
-		}
-		if strings.HasPrefix(line, "completed_at:") {
-			op.CompletedAt = strings.TrimSpace(strings.TrimPrefix(line, "completed_at:"))
-		}
-	}
-
-	// Calculate elapsed
-	if op.CreatedAt != "" {
-		if start, err := time.Parse(time.RFC3339, op.CreatedAt); err == nil {
-			end := time.Now()
-			if op.CompletedAt != "" {
-				if t, err := time.Parse(time.RFC3339, op.CompletedAt); err == nil {
-					end = t
-				}
-			}
-			d := end.Sub(start)
-			if d < time.Hour {
-				op.Elapsed = fmt.Sprintf("%dm", int(d.Minutes()))
-			} else {
-				op.Elapsed = fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-			}
-		}
-	}
-
-	return op
-}
-
 func listSquads() []string {
-	squadsDir := filepath.Join(swatHome(), "squads")
-	entries, _ := os.ReadDir(squadsDir)
-	var squads []string
-	for _, e := range entries {
-		if e.IsDir() {
-			squads = append(squads, e.Name())
+	all, _ := operation.List()
+	seen := map[string]bool{}
+	for _, op := range all {
+		if op.Squad != "" {
+			seen[op.Squad] = true
 		}
 	}
+	var squads []string
+	for s := range seen {
+		squads = append(squads, s)
+	}
+	sort.Strings(squads)
 	return squads
 }
 
 func readOpFile(opId, filename string) (string, error) {
-	squadsDir := filepath.Join(swatHome(), "squads")
-	squadDirs, _ := os.ReadDir(squadsDir)
-	for _, sd := range squadDirs {
-		if !sd.IsDir() {
-			continue
-		}
-		path := filepath.Join(squadsDir, sd.Name(), "operations", opId, filename)
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return string(data), nil
-		}
+	op, err := operation.Find(opId)
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("not found")
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".swat", "squads", op.Squad, "operations", opId, filename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func containsCI(s, sub string) bool {

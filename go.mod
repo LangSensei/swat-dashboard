@@ -1,6 +1,6 @@
 module github.com/LangSensei/swat-dashboard
 
-go 1.22.2
+go 1.24.1
 
 require (
 	github.com/creack/pty v1.1.24
@@ -8,6 +8,9 @@ require (
 )
 
 require (
-	github.com/UserExistsError/conpty v0.1.4 // indirect
-	golang.org/x/sys v0.8.0 // indirect
+	github.com/LangSensei/swat v0.0.0
+	github.com/UserExistsError/conpty v0.1.4
+	golang.org/x/sys v0.37.0 // indirect
 )
+
+replace github.com/LangSensei/swat => /tmp/swat
