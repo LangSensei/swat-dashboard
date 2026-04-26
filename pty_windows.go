@@ -29,7 +29,7 @@ func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
 		parts = append(parts, a)
 	}
 	cmdLine := strings.Join(parts, " ")
-	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(120, 30))
+	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(120, 30), conpty.ConPtyWorkDir(cmd.Dir))
 	if err != nil {
 		return nil, fmt.Errorf("conpty start: %w", err)
 	}
