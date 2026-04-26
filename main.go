@@ -183,6 +183,10 @@ func containsCI(s, sub string) bool {
 
 // --- PTY session ---
 
+// --- Default session prompt ---
+
+const defaultPrompt = `You are an operator in the SWAT multi-agent system. Your workspace is the current directory. You have access to the filesystem under ~/.swat/ which contains squads, operations, and skills. Help the user with SWAT operations: dispatching tasks, reviewing operation results, debugging failures, and managing squads. Be concise and action-oriented.`
+
 // --- PTY session manager ---
 
 var (
@@ -198,12 +202,29 @@ func getOrCreateSession(runtimeName, prompt string) (*platformPTY, error) {
 		return sess, nil
 	}
 
+	if prompt == "" {
+		prompt = defaultPrompt
+	}
 	sess, err := createPTYSession(runtimeName, prompt)
 	if err != nil {
 		return nil, err
 	}
 	sessions[runtimeName] = sess
 	return sess, nil
+}
+
+func autoStartSessions() {
+	for _, rt := range []string{"copilot", "gemini"} {
+		if _, err := exec.LookPath(rt); err == nil {
+			sess, err := getOrCreateSession(rt, defaultPrompt)
+			if err != nil {
+				log.Printf("Failed to auto-start %s: %v", rt, err)
+			} else {
+				log.Printf("Auto-started %s session", rt)
+				_ = sess
+			}
+		}
+	}
 }
 
 func removeSession(runtimeName string) {
@@ -405,6 +426,10 @@ func main() {
 
 	url := fmt.Sprintf("http://localhost:%s", port)
 	fmt.Printf("SWAT Dashboard running at %s\n", url)
+
+	// Auto-start available CLI sessions
+	autoStartSessions()
+
 	openBrowser(url)
 
 	// Graceful shutdown

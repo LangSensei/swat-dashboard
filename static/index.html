@@ -121,9 +121,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="right-content">
       <div id="terminal-container" class="visible">
         <div id="terminal-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;">
-          <div style="color:var(--fg2);font-size:14px;">Start a new session</div>
-          <textarea id="session-prompt" placeholder="Enter task prompt..." style="width:400px;height:80px;background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:10px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
-          <button onclick="connectSession()" style="background:var(--accent);border:none;color:#fff;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Launch</button>
+          <div style="color:var(--fg2);font-size:14px;">Connecting...</div>
         </div>
         <div id="terminal-inner" style="width:100%;height:100%;display:none;"></div>
       </div>
@@ -190,14 +188,11 @@ function connectSession() {
   fitAddon.fit();
 
   const rt = document.getElementById('runtime-select').value;
-  const prompt = document.getElementById('session-prompt').value.trim();
   currentRuntime = rt;
   if (ws) ws.close();
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const params = new URLSearchParams({ runtime: rt });
-  if (prompt) params.set('prompt', prompt);
-  ws = new WebSocket(`${proto}//${location.host}/ws/session?${params}`);
+  ws = new WebSocket(`${proto}//${location.host}/ws/session?runtime=${rt}`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
@@ -413,9 +408,14 @@ async function loadRuntimes() {
       opt.disabled = !rt.available;
       select.appendChild(opt);
     });
-    // Select first available
+    // Select first available and auto-connect
     const first = runtimes.find(r => r.available);
-    if (first) select.value = first.name;
+    if (first) {
+      select.value = first.name;
+      connectSession();
+    } else {
+      document.getElementById('terminal-placeholder').innerHTML = '<div style="color:var(--fg2);font-size:14px;">No CLI runtimes installed</div>';
+    }
   } catch(e) {}
 }
 </script>
