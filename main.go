@@ -185,7 +185,7 @@ func containsCI(s, sub string) bool {
 
 // --- Default session prompt ---
 
-const defaultPrompt = `You are an operator in the SWAT multi-agent system. Your workspace is the current directory. You have access to the filesystem under ~/.swat/ which contains squads, operations, and skills. Help the user with SWAT operations: dispatching tasks, reviewing operation results, debugging failures, and managing squads. Be concise and action-oriented.`
+const defaultPrompt = `You are a SWAT operator. Workspace: ~/.swat/ (squads, operations, skills). Help dispatch tasks, review results, debug failures.`
 
 // --- PTY session manager ---
 

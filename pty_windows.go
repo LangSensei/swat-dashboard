@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 
 	conpty "github.com/UserExistsError/conpty"
@@ -18,14 +19,15 @@ type platformPTY struct {
 }
 
 func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
-	args := append([]string{cmd.Path}, cmd.Args[1:]...)
-	cmdLine := ""
-	for i, a := range args {
-		if i > 0 {
-			cmdLine += " "
+	// Build Windows command line with proper quoting
+	parts := make([]string, 0, len(cmd.Args))
+	for _, a := range cmd.Args {
+		if strings.ContainsAny(a, " \t\"") {
+			a = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
 		}
-		cmdLine += a
+		parts = append(parts, a)
 	}
+	cmdLine := strings.Join(parts, " ")
 	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(120, 30))
 	if err != nil {
 		return nil, fmt.Errorf("conpty start: %w", err)
