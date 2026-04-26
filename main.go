@@ -190,16 +190,17 @@ const defaultPrompt = `You are a SWAT operator. Workspace: ~/.swat/ (squads, ope
 // --- PTY session manager ---
 
 var (
-	sessions   = make(map[string]*platformPTY) // runtime -> PTY
-	sessionsMu sync.Mutex
+	sessions      = make(map[string]*platformPTY)
+	broadcasters  = make(map[string]*Broadcaster)
+	sessionsMu    sync.Mutex
 )
 
-func getOrCreateSession(runtimeName, prompt string) (*platformPTY, error) {
+func getOrCreateSession(runtimeName, prompt string) (*platformPTY, *Broadcaster, error) {
 	sessionsMu.Lock()
 	defer sessionsMu.Unlock()
 
 	if sess, ok := sessions[runtimeName]; ok {
-		return sess, nil
+		return sess, broadcasters[runtimeName], nil
 	}
 
 	if prompt == "" {
@@ -207,32 +208,32 @@ func getOrCreateSession(runtimeName, prompt string) (*platformPTY, error) {
 	}
 	sess, err := createPTYSession(runtimeName, prompt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sessions[runtimeName] = sess
-	return sess, nil
+
+	bc := NewBroadcaster()
+	broadcasters[runtimeName] = bc
+	bc.Start(sess, func() {
+		sessionsMu.Lock()
+		delete(sessions, runtimeName)
+		delete(broadcasters, runtimeName)
+		sessionsMu.Unlock()
+	})
+
+	return sess, bc, nil
 }
 
 func autoStartSessions() {
 	for _, rt := range []string{"copilot", "gemini"} {
 		if _, err := exec.LookPath(rt); err == nil {
-			sess, err := getOrCreateSession(rt, defaultPrompt)
+			_, _, err := getOrCreateSession(rt, defaultPrompt)
 			if err != nil {
 				log.Printf("Failed to auto-start %s: %v", rt, err)
 			} else {
 				log.Printf("Auto-started %s session", rt)
-				_ = sess
 			}
 		}
-	}
-}
-
-func removeSession(runtimeName string) {
-	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-	if sess, ok := sessions[runtimeName]; ok {
-		sess.Close()
-		delete(sessions, runtimeName)
 	}
 }
 
@@ -334,28 +335,22 @@ func handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sess, err := getOrCreateSession(rt, prompt)
+	sess, bc, err := getOrCreateSession(rt, prompt)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %v", err)))
 		return
 	}
-	// Note: don't defer sess.Close() — session persists across reconnects
 
-	// PTY → WebSocket
+	// Subscribe to broadcaster
+	subID, ch := bc.Subscribe()
+	defer bc.Unsubscribe(subID)
+
+	// Broadcaster → WebSocket
 	done := make(chan struct{})
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := sess.Read(buf)
-			if n > 0 {
-				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Session ended]"))
-				removeSession(rt)
-				close(done)
+		defer close(done)
+		for data := range ch {
+			if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 				return
 			}
 		}
