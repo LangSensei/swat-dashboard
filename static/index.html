@@ -39,7 +39,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .op-squad { font-size: 13px; font-weight: 500; margin: 2px 0; }
 .op-meta { font-size: 11px; color: var(--fg2); display: flex; gap: 8px; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-.status-dot.active { background: var(--green); animation: pulse 2s infinite; }
+.status-dot.active, .status-dot.queued { background: var(--green); animation: pulse 2s infinite; }
 .status-dot.completed { background: var(--fg2); }
 .status-dot.failed { background: var(--red); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -285,8 +285,8 @@ async function loadOps() {
   activeList.innerHTML = '';
   historyList.innerHTML = '';
 
-  const active = (data.operations || []).filter(op => op.status === 'active');
-  const rest = (data.operations || []).filter(op => op.status !== 'active');
+  const active = (data.operations || []).filter(op => op.status === 'active' || op.status === 'queued');
+  const rest = (data.operations || []).filter(op => op.status !== 'active' && op.status !== 'queued');
 
   if (active.length === 0) {
     activeList.innerHTML = '<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">No active operations</div>';
