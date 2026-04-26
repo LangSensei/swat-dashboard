@@ -182,13 +182,23 @@ func containsCI(s, sub string) bool {
 
 // --- PTY session ---
 
-func newPTYSession(runtimeName string) (*platformPTY, error) {
+func newPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	var cmd *exec.Cmd
 	switch runtimeName {
 	case "copilot":
-		cmd = exec.Command("gh", "copilot")
+		args := []string{"copilot"}
+		if prompt != "" {
+			args = append(args, "-i", prompt)
+		}
+		args = append(args, "--yolo")
+		cmd = exec.Command("gh", args...)
 	case "gemini":
-		cmd = exec.Command("gemini")
+		args := []string{}
+		if prompt != "" {
+			args = append(args, "-i", prompt)
+		}
+		args = append(args, "--yolo")
+		cmd = exec.Command("gemini", args...)
 	default:
 		return nil, fmt.Errorf("unknown runtime: %s", runtimeName)
 	}
@@ -245,6 +255,7 @@ func handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	if rt == "" {
 		rt = "copilot"
 	}
+	prompt := r.URL.Query().Get("prompt")
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -252,7 +263,7 @@ func handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sess, err := newPTYSession(rt)
+	sess, err := newPTYSession(rt, prompt)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %v", err)))
 		return
