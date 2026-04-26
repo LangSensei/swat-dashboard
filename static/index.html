@@ -142,88 +142,84 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 let currentOffset = 0;
 let totalOps = 0;
 let selectedOp = null;
-let term = null;
-let ws = null;
-let fitAddon = null;
+// Per-runtime terminal state: { term, fitAddon, ws, closeTimer, div }
+const terminals = {};
+let currentRuntime = null;
 
-// --- Terminal ---
-function initTerminal() {
-  term = new Terminal({
-    theme: {
-      background: '#0d1117',
-      foreground: '#c9d1d9',
-      cursor: '#58a6ff',
-      selectionBackground: '#264f78'
-    },
-    fontFamily: "'Cascadia Code', 'Fira Code', monospace",
+function getOrCreateTerminal(rt) {
+  if (terminals[rt]) return terminals[rt];
+  const container = document.getElementById('terminal-inner');
+  const div = document.createElement('div');
+  div.id = `term-${rt}`;
+  div.style.cssText = 'width:100%;height:100%;display:none;';
+  container.appendChild(div);
+  const t = new Terminal({
+    scrollback: 10000,
+    theme: { background:'#0d1117', foreground:'#c9d1d9', cursor:'#58a6ff', selectionBackground:'#264f78' },
+    fontFamily: "'Cascadia Code','Fira Code',monospace",
     fontSize: 14,
     cursorBlink: true
   });
-  fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(document.getElementById('terminal-inner'));
+  const fa = new FitAddon.FitAddon();
+  t.loadAddon(fa);
+  t.open(div);
+  t.onData(data => {
+    const s = terminals[rt];
+    if (s && s.ws && s.ws.readyState === WebSocket.OPEN) s.ws.send(data);
+  });
+  terminals[rt] = { term:t, fitAddon:fa, ws:null, closeTimer:null, div };
+  return terminals[rt];
+}
 
+function initTerminal() {
   const ro = new ResizeObserver(() => {
-    if (document.getElementById('terminal-container').classList.contains('visible') &&
-        document.getElementById('terminal-inner').style.display !== 'none') {
-      fitAddon.fit();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
+    if (!currentRuntime || !terminals[currentRuntime]) return;
+    const s = terminals[currentRuntime];
+    if (s.div.style.display !== 'none') {
+      s.fitAddon.fit();
+      if (s.ws && s.ws.readyState === WebSocket.OPEN)
+        s.ws.send(JSON.stringify({ type:'resize', cols:s.term.cols, rows:s.term.rows }));
     }
   });
   ro.observe(document.getElementById('terminal-container'));
-
-  term.onData(data => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-    }
-  });
 }
 
-let currentRuntime = null;
-let wsCloseTimer = null;
-
 function connectSession() {
-  if (wsCloseTimer) { clearTimeout(wsCloseTimer); wsCloseTimer = null; }
+  const rt = document.getElementById('runtime-select').value;
+  // Hide all terminal divs
+  for (const s of Object.values(terminals)) s.div.style.display = 'none';
+  const state = getOrCreateTerminal(rt);
   document.getElementById('terminal-placeholder').style.display = 'none';
   document.getElementById('terminal-inner').style.display = 'block';
-  term.clear();
-  fitAddon.fit();
-
-  const rt = document.getElementById('runtime-select').value;
+  state.div.style.display = 'block';
   currentRuntime = rt;
-  if (ws) {
-    ws.onclose = null; // Detach old handler before closing
-    ws.close();
+  // Already connected? Just show
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.fitAddon.fit();
+    state.term.focus();
+    return;
   }
-
+  if (state.closeTimer) { clearTimeout(state.closeTimer); state.closeTimer = null; }
+  if (state.ws) { state.ws.onclose = null; state.ws.close(); }
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/ws/session?runtime=${rt}`);
-  ws.binaryType = 'arraybuffer';
-
-  ws.onopen = () => {
-    term.clear();
-    term.writeln(`Connecting to ${rt}...`);
+  state.ws = new WebSocket(`${proto}//${location.host}/ws/session?runtime=${rt}`);
+  state.ws.binaryType = 'arraybuffer';
+  state.ws.onopen = () => {
     setTimeout(() => {
-      fitAddon.fit();
-      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      term.focus();
+      state.fitAddon.fit();
+      state.ws.send(JSON.stringify({ type:'resize', cols:state.term.cols, rows:state.term.rows }));
+      state.term.focus();
     }, 100);
   };
-  ws.onmessage = (e) => {
-    if (e.data instanceof ArrayBuffer) {
-      term.write(new Uint8Array(e.data));
-    } else {
-      term.write(e.data);
-    }
+  state.ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) state.term.write(new Uint8Array(e.data));
+    else state.term.write(e.data);
   };
-  ws.onclose = () => {
-    term.writeln('\r\n[Disconnected]');
-    wsCloseTimer = setTimeout(() => {
-      // Only show placeholder if we haven't reconnected
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        document.getElementById('terminal-inner').style.display = 'none';
+  state.ws.onclose = () => {
+    state.term.writeln('\r\n[Disconnected]');
+    state.closeTimer = setTimeout(() => {
+      if ((!state.ws || state.ws.readyState !== WebSocket.OPEN) && currentRuntime === rt) {
+        state.div.style.display = 'none';
         document.getElementById('terminal-placeholder').innerHTML = '<div style="color:var(--fg2);font-size:14px;">Disconnected</div><button onclick="connectSession()" style="background:var(--accent);border:none;color:#fff;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Reconnect</button>';
         document.getElementById('terminal-placeholder').style.display = 'flex';
       }
@@ -232,7 +228,6 @@ function connectSession() {
 }
 
 document.getElementById('runtime-select').addEventListener('change', () => {
-  // Switch to the other runtime's session (reconnect to existing PTY)
   if (document.getElementById('terminal-inner').style.display !== 'none') {
     connectSession();
   }
@@ -244,7 +239,10 @@ function showTab(name) {
   document.getElementById('tab-detail').classList.toggle('active', name === 'detail');
   document.getElementById('terminal-container').classList.toggle('visible', name === 'session');
   document.getElementById('detail-view').classList.toggle('visible', name === 'detail');
-  if (name === 'session') { fitAddon.fit(); term.focus(); }
+  if (name === 'session' && currentRuntime && terminals[currentRuntime]) {
+    terminals[currentRuntime].fitAddon.fit();
+    terminals[currentRuntime].term.focus();
+  }
 }
 
 // --- Operations ---
