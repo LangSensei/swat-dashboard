@@ -180,8 +180,10 @@ function initTerminal() {
 }
 
 let currentRuntime = null;
+let wsCloseTimer = null;
 
 function connectSession() {
+  if (wsCloseTimer) { clearTimeout(wsCloseTimer); wsCloseTimer = null; }
   document.getElementById('terminal-placeholder').style.display = 'none';
   document.getElementById('terminal-inner').style.display = 'block';
   term.clear();
@@ -189,7 +191,10 @@ function connectSession() {
 
   const rt = document.getElementById('runtime-select').value;
   currentRuntime = rt;
-  if (ws) ws.close();
+  if (ws) {
+    ws.onclose = null; // Detach old handler before closing
+    ws.close();
+  }
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws/session?runtime=${rt}`);
@@ -212,9 +217,13 @@ function connectSession() {
   };
   ws.onclose = () => {
     term.writeln('\r\n[Disconnected]');
-    setTimeout(() => {
-      document.getElementById('terminal-inner').style.display = 'none';
-      document.getElementById('terminal-placeholder').style.display = 'flex';
+    wsCloseTimer = setTimeout(() => {
+      // Only show placeholder if we haven't reconnected
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        document.getElementById('terminal-inner').style.display = 'none';
+        document.getElementById('terminal-placeholder').innerHTML = '<div style="color:var(--fg2);font-size:14px;">Disconnected</div><button onclick="connectSession()" style="background:var(--accent);border:none;color:#fff;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Reconnect</button>';
+        document.getElementById('terminal-placeholder').style.display = 'flex';
+      }
     }, 2000);
   };
 }
