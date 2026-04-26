@@ -259,7 +259,7 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	}
 	args = append(args, "--yolo")
 	if cmdName == "gemini" {
-		args = append(args, "--skip-trust")
+		args = append(args, "--skip-trust", "--approval-mode", "yolo")
 	}
 	cmd := exec.Command(cmdName, args...)
 	cmd.Dir = filepath.Join(homeDir(), ".swat")
