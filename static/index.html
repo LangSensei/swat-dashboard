@@ -119,7 +119,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       </select>
     </div>
     <div class="right-content">
-      <div id="terminal-container" class="visible"></div>
+      <div id="terminal-container" class="visible">
+        <div id="terminal-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;">
+          <div style="color:var(--fg2);font-size:14px;">No active session</div>
+          <button onclick="connectSession()" style="background:var(--accent);border:none;color:#fff;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Connect</button>
+        </div>
+        <div id="terminal-inner" style="width:100%;height:100%;display:none;"></div>
+      </div>
       <div id="detail-view">
         <div class="empty" id="detail-empty">Select an operation to view details</div>
         <div id="detail-content" style="display:none"></div>
@@ -154,12 +160,11 @@ function initTerminal() {
   });
   fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
-  term.open(document.getElementById('terminal-container'));
-  fitAddon.fit();
+  term.open(document.getElementById('terminal-inner'));
 
-  // Resize observer
   const ro = new ResizeObserver(() => {
-    if (document.getElementById('terminal-container').classList.contains('visible')) {
+    if (document.getElementById('terminal-container').classList.contains('visible') &&
+        document.getElementById('terminal-inner').style.display !== 'none') {
       fitAddon.fit();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -176,6 +181,12 @@ function initTerminal() {
 }
 
 function connectSession() {
+  // Show terminal, hide placeholder
+  document.getElementById('terminal-placeholder').style.display = 'none';
+  document.getElementById('terminal-inner').style.display = 'block';
+  term.clear();
+  fitAddon.fit();
+
   const rt = document.getElementById('runtime-select').value;
   if (ws) ws.close();
 
@@ -198,7 +209,13 @@ function connectSession() {
       term.write(e.data);
     }
   };
-  ws.onclose = () => term.writeln('\r\n[Disconnected]');
+  ws.onclose = () => {
+    term.writeln('\r\n[Disconnected]');
+    setTimeout(() => {
+      document.getElementById('terminal-inner').style.display = 'none';
+      document.getElementById('terminal-placeholder').style.display = 'flex';
+    }, 2000);
+  };
 }
 
 document.getElementById('runtime-select').addEventListener('change', connectSession);
@@ -367,7 +384,7 @@ async function updateStats() {
 loadSquads();
 loadOps();
 initTerminal();
-connectSession();
+// Don't auto-connect session — user clicks "Connect" when needed
 
 // Poll active ops every 5s
 setInterval(loadOps, 5000);
