@@ -259,7 +259,13 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	}
 	args = append(args, "--yolo")
 	cmd := exec.Command(cmdName, args...)
+	cmd.Dir = filepath.Join(homeDir(), ".swat")
 	return startPTY(cmd)
+}
+
+func homeDir() string {
+	h, _ := os.UserHomeDir()
+	return h
 }
 
 // --- HTTP Handlers ---
