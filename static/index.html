@@ -206,6 +206,7 @@ function connectSession() {
     setTimeout(() => {
       fitAddon.fit();
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      term.focus();
     }, 100);
   };
   ws.onmessage = (e) => {
@@ -241,7 +242,7 @@ function showTab(name) {
   document.getElementById('tab-detail').classList.toggle('active', name === 'detail');
   document.getElementById('terminal-container').classList.toggle('visible', name === 'session');
   document.getElementById('detail-view').classList.toggle('visible', name === 'detail');
-  if (name === 'session') fitAddon.fit();
+  if (name === 'session') { fitAddon.fit(); term.focus(); }
 }
 
 // --- Operations ---
