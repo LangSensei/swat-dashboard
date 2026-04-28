@@ -56,6 +56,22 @@ func opToView(op *operation.Operation) OpView {
 		Brief:   op.Brief,
 		Summary: op.Summary,
 	}
+	// Re-parse OPERATION.md frontmatter with a real YAML parser so block-
+	// scalar markers (`|`, `>`) and other YAML literals never leak into the
+	// UI. Falls back to the upstream-provided value on any error.
+	if home, err := os.UserHomeDir(); err == nil {
+		opMD := filepath.Join(home, ".swat", "squads", op.Squad, "operations", op.OperationID, "OPERATION.md")
+		if data, err := os.ReadFile(opMD); err == nil {
+			if meta, _, ok := parseFrontmatter(data); ok {
+				if s := frontmatterString(meta, "summary"); s != "" {
+					v.Summary = s
+				}
+				if s := frontmatterString(meta, "brief"); s != "" {
+					v.Brief = s
+				}
+			}
+		}
+	}
 	if !op.CreatedAt.IsZero() {
 		v.CreatedAt = op.CreatedAt.Format(time.RFC3339)
 	}
@@ -329,6 +345,13 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
+	}
+	// For OPERATION.md, strip the leading YAML frontmatter so the renderer
+	// (marked.js on the frontend) does not display the raw metadata block.
+	if file == "OPERATION.md" {
+		if _, body, ok := parseFrontmatter([]byte(content)); ok {
+			content = body
+		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(content))
