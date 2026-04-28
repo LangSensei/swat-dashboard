@@ -140,7 +140,7 @@ post_install() {
 # --- Cleanup ---
 
 cleanup() {
-    rm -rf "$EXTRACT_DIR"
+    rm -rf "${EXTRACT_DIR:-}"
 }
 
 # --- Main ---
