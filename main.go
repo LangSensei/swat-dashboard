@@ -236,7 +236,11 @@ func homeDir() string {
 
 // handleStats returns operation counts by status.
 func handleStats(w http.ResponseWriter, r *http.Request) {
-	all, _ := operation.List()
+	all, err := operation.List()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to list operations: %v", err), http.StatusInternalServerError)
+		return
+	}
 	counts := map[string]int{"active": 0, "queued": 0, "completed": 0, "failed": 0}
 	for _, op := range all {
 		counts[op.Status]++

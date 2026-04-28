@@ -303,6 +303,8 @@ async function loadOps() {
     document.getElementById('stat-failed').textContent = `Failed: ${stats.failed || 0}`;
   } catch(e) {
     document.getElementById('stat-active').textContent = `Active: ${active.length}`;
+    document.getElementById('stat-completed').textContent = `Completed: —`;
+    document.getElementById('stat-failed').textContent = `Failed: —`;
   }
 }
 
