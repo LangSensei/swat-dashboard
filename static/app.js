@@ -69,8 +69,9 @@ function initTerminal() {
   ro.observe(document.getElementById('terminal-container'));
 }
 
-function connectSession() {
-  const rt = document.getElementById('runtime-select').value;
+function connectSession(rt) {
+  if (!rt) rt = currentRuntime;
+  if (!rt) return;
   // Hide all terminal divs
   for (const s of Object.values(terminals)) s.div.style.display = 'none';
   const state = getOrCreateTerminal(rt);
@@ -112,11 +113,73 @@ function connectSession() {
   };
 }
 
-document.getElementById('runtime-select').addEventListener('change', () => {
-  if (document.getElementById('terminal-inner').style.display !== 'none') {
-    connectSession();
+// Toast helper for switch feedback
+function toast(msg, kind) {
+  let el = document.getElementById('runtime-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'runtime-toast';
+    el.style.cssText = 'position:fixed;bottom:20px;right:20px;padding:10px 16px;border-radius:6px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:360px;';
+    document.body.appendChild(el);
   }
-});
+  el.style.background = kind === 'error' ? '#c0392b' : '#34495e';
+  el.style.color = '#fff';
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+// Tear down a runtime's local WS+terminal state so a follow-up
+// connectSession() spins up a fresh one against the new active backend.
+function teardownRuntimeState(rt) {
+  const state = terminals[rt];
+  if (!state) return;
+  if (state.closeTimer) { clearTimeout(state.closeTimer); state.closeTimer = null; }
+  if (state.ws) { state.ws.onclose = null; try { state.ws.close(); } catch(e) {} state.ws = null; }
+}
+
+async function switchRuntime(to) {
+  if (to === currentRuntime) return;
+  try {
+    const resp = await fetch('/api/runtime/switch?to=' + encodeURIComponent(to), { method:'POST' });
+    if (resp.status === 200) {
+      teardownRuntimeState(currentRuntime);
+      teardownRuntimeState(to);
+      await loadRuntimes(true);
+      connectSession(to);
+    } else if (resp.status === 409) {
+      toast('Another runtime switch is in progress. Try again.', 'error');
+      loadRuntimes(true);
+    } else if (resp.status === 400) {
+      toast(to + ' CLI is not available on PATH', 'error');
+      loadRuntimes(true);
+    } else {
+      const txt = await resp.text();
+      toast('Switch failed: ' + (txt || resp.statusText), 'error');
+    }
+  } catch (e) {
+    toast('Switch failed: ' + e.message, 'error');
+  }
+}
+
+function renderRuntimeTabs(runtimes, activeName) {
+  const container = document.getElementById('runtime-tabs');
+  if (!container) return;
+  container.innerHTML = '';
+  runtimes.forEach(rt => {
+    const tab = document.createElement('div');
+    const isActive = rt.name === activeName;
+    tab.className = 'tab' + (isActive ? ' active' : '');
+    tab.textContent = rt.name + (rt.available ? '' : ' (n/a)');
+    tab.title = rt.session_id ? ('session ' + rt.session_id) : '';
+    tab.style.cssText = 'cursor:' + (rt.available ? 'pointer' : 'not-allowed') + ';opacity:' + (rt.available ? '1' : '0.5') + ';padding:4px 12px;border-radius:6px;font-size:12px;border:1px solid var(--border);' + (isActive ? 'background:var(--accent);color:#fff;border-color:var(--accent);' : 'background:var(--bg);color:var(--fg);');
+    if (rt.available) {
+      tab.addEventListener('click', () => switchRuntime(rt.name));
+    }
+    container.appendChild(tab);
+  });
+}
 
 // --- Tabs ---
 function showTab(name) {
@@ -518,24 +581,17 @@ loadRuntimes();
 setInterval(loadActiveOps, 5000);
 setInterval(loadStats, 10000);
 
-async function loadRuntimes() {
+async function loadRuntimes(skipAutoConnect) {
   try {
     const resp = await fetch('/api/runtimes');
     const runtimes = await resp.json();
-    const select = document.getElementById('runtime-select');
-    select.innerHTML = '';
-    runtimes.forEach(rt => {
-      const opt = document.createElement('option');
-      opt.value = rt.name;
-      opt.textContent = rt.name + (rt.available ? '' : ' (not installed)');
-      opt.disabled = !rt.available;
-      select.appendChild(opt);
-    });
-    // Select first available and auto-connect
-    const first = runtimes.find(r => r.available);
-    if (first) {
-      select.value = first.name;
-      connectSession();
+    const active = (runtimes.find(r => r.active) || {}).name || '';
+    renderRuntimeTabs(runtimes, active);
+    if (skipAutoConnect) return;
+    const target = runtimes.find(r => r.active && r.available)
+                || runtimes.find(r => r.available);
+    if (target) {
+      connectSession(target.name);
     } else {
       document.getElementById('terminal-placeholder').innerHTML = '<div style="color:var(--fg2);font-size:14px;">No CLI runtimes installed</div>';
     }

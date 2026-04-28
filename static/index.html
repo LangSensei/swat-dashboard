@@ -46,10 +46,7 @@
     <div class="right-header">
       <div class="tab active" id="tab-session" onclick="showTab('session')">Session</div>
       <div class="tab" id="tab-detail" onclick="showTab('detail')">Detail</div>
-      <select id="runtime-select" style="margin-left:auto;background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:12px;">
-        <option value="copilot">Copilot CLI</option>
-        <option value="gemini">Gemini CLI</option>
-      </select>
+      <div id="runtime-tabs" style="margin-left:auto;display:flex;gap:4px;"></div>
     </div>
     <div class="right-content">
       <div id="terminal-container" class="visible">
