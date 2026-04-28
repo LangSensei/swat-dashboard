@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -22,6 +23,9 @@ import (
 	"github.com/LangSensei/swat/commander/operation"
 	"github.com/gorilla/websocket"
 )
+
+// version is set at build time via ldflags: -X main.version=v1.2.3
+var version = "dev"
 
 //go:embed static/*
 var staticFiles embed.FS
@@ -377,6 +381,14 @@ func openBrowser(url string) {
 }
 
 func main() {
+	showVersion := flag.Bool("version", false, "Print version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("swat-dashboard %s\n", version)
+		os.Exit(0)
+	}
+
 	port := "8370"
 	if p := os.Getenv("PORT"); p != "" {
 		port = p
@@ -401,7 +413,7 @@ func main() {
 	}
 
 	url := fmt.Sprintf("http://localhost:%s", port)
-	fmt.Printf("SWAT Dashboard running at %s\n", url)
+	fmt.Printf("SWAT Dashboard %s running at %s\n", version, url)
 
 	// Auto-start available CLI sessions
 	autoStartSessions()
