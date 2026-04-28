@@ -309,7 +309,9 @@ async function selectOp(op) {
   const isCancelled = op.status === 'failed' && op.failure_reason === 'cancelled_by_user';
   const statusDotClass = isCancelled ? 'cancelled' : op.status;
   const statusLabel = isCancelled ? 'cancelled' : op.status;
-  const reasonRow = (op.status === 'failed' && op.failure_reason)
+  // Skip the Failure Reason row for cancellations: the "cancelled" status label
+  // already conveys it, and the raw `cancelled_by_user` token is redundant noise.
+  const reasonRow = (op.status === 'failed' && op.failure_reason && !isCancelled)
     ? `<div class="detail-field"><div class="detail-label">Failure Reason</div><div class="detail-value">${escapeHtml(op.failure_reason)}</div></div>`
     : '';
   let html = `
