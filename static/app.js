@@ -223,6 +223,12 @@ async function loadHistoryOps(reset = true) {
     historyTotal = data.total || 0;
     ops.forEach(op => renderOpCard(op, historyList));
     historyOffset += ops.length;
+    // If a non-reset page returned 0 ops while the server still claims more
+    // (e.g. data churned between fetches), reconcile total to current offset
+    // so the Load-More button hides instead of looping on empty pages.
+    if (!reset && ops.length === 0) {
+      historyTotal = historyOffset;
+    }
     if (reset && historyOffset === 0) {
       renderEmpty(historyList, 'No operations');
     }
