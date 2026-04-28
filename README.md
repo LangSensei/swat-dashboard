@@ -6,8 +6,38 @@
 - Filtering by squad, status, and keyword
 - Operation detail viewer
 
+## Installation
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LangSensei/swat-dashboard/main/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/LangSensei/swat-dashboard/main/install.ps1 | iex
+```
+
+After installation, run `swat-dashboard` to open the dashboard in your browser at [http://localhost:8370](http://localhost:8370).
+
+### Uninstall
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/LangSensei/swat-dashboard/main/uninstall.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/LangSensei/swat-dashboard/main/uninstall.ps1 | iex
+```
+
+Use `--purge` to also remove the `~/.swat/bin/` directory if empty. Use `--yes` to skip the confirmation prompt.
+
 ## Prerequisites
-- Go 1.24+
+- Go 1.24+ (for building from source)
 
 ## Build & Run
 
