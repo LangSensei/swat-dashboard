@@ -7,8 +7,13 @@
 // (`operation.Status` in github.com/LangSensei/swat/operation). When that enum
 // changes (rename / add / remove), update both lists below so polling does not
 // silently drop ops. The backend `/api/ops?status=` accepts a comma list.
+//
+// Note: there is no separate `cancelled` status. User-cancelled ops have
+// `status === 'failed'` with `failure_reason === 'cancelled_by_user'`.
+// They surface in the history list under `failed` and are visually
+// distinguished by `renderOpCard` via a "Cancelled" badge.
 const ACTIVE_STATUSES = 'active,queued';
-const HISTORY_STATUSES = 'completed,failed,cancelled';
+const HISTORY_STATUSES = 'completed,failed';
 let historyOffset = 0;
 let historyTotal = 0;
 let selectedOp = null;
@@ -135,12 +140,15 @@ function renderOpCard(op, container) {
   const card = document.createElement('div');
   card.className = 'op-card' + (selectedOp === op.id ? ' selected' : '');
   card.onclick = () => selectOp(op);
+  const isCancelled = op.status === 'failed' && op.failure_reason === 'cancelled_by_user';
+  const dotClass = isCancelled ? 'cancelled' : op.status;
+  const badge = isCancelled ? ' <span class="op-badge cancelled">Cancelled</span>' : '';
   card.innerHTML = `
-    <div class="op-squad"><span class="status-dot ${op.status}"></span>${op.squad}</div>
-    <div class="op-id">${op.id}</div>
+    <div class="op-squad"><span class="status-dot ${dotClass}"></span>${escapeHtml(op.squad)}${badge}</div>
+    <div class="op-id">${escapeHtml(op.id)}</div>
     <div class="op-meta">
-      <span>${op.elapsed || '—'}</span>
-      <span>${op.summary ? op.summary.substring(0, 60) + (op.summary.length > 60 ? '...' : '') : op.brief || ''}</span>
+      <span>${escapeHtml(op.elapsed || '—')}</span>
+      <span>${escapeHtml(op.summary ? op.summary.substring(0, 60) + (op.summary.length > 60 ? '...' : '') : op.brief || '')}</span>
     </div>
   `;
   container.appendChild(card);
@@ -298,10 +306,16 @@ async function selectOp(op) {
   content.style.display = '';
 
   // Build metadata section
+  const isCancelled = op.status === 'failed' && op.failure_reason === 'cancelled_by_user';
+  const statusDotClass = isCancelled ? 'cancelled' : op.status;
+  const statusLabel = isCancelled ? 'cancelled' : op.status;
+  const reasonRow = (op.status === 'failed' && op.failure_reason)
+    ? `<div class="detail-field"><div class="detail-label">Failure Reason</div><div class="detail-value">${escapeHtml(op.failure_reason)}</div></div>`
+    : '';
   let html = `
     <div class="detail-field">
       <div class="detail-label">Operation</div>
-      <div class="detail-value">${escapeHtml(op.id)} &nbsp; <span class="status-dot ${op.status}"></span>${escapeHtml(op.status)}</div>
+      <div class="detail-value">${escapeHtml(op.id)} &nbsp; <span class="status-dot ${statusDotClass}"></span>${escapeHtml(statusLabel)}</div>
     </div>
     <div class="detail-field">
       <div class="detail-label">Squad</div>
@@ -312,6 +326,7 @@ async function selectOp(op) {
       <div class="detail-value">${escapeHtml(op.brief || '—')}</div>
     </div>
     ${op.summary ? `<div class="detail-field"><div class="detail-label">Summary</div><div class="detail-value">${escapeHtml(op.summary)}</div></div>` : ''}
+    ${reasonRow}
     <div class="detail-field">
       <div class="detail-label">Duration</div>
       <div class="detail-value">${escapeHtml(op.elapsed || '—')} &nbsp; (${escapeHtml(op.created_at || '?')} → ${escapeHtml(op.completed_at || 'running')})</div>
