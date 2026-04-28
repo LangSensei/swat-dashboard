@@ -1,6 +1,12 @@
 // --- State ---
-let currentOffset = 0;
-let totalOps = 0;
+// Active and history lists are queried independently — each owns its own
+// fetch, refresh interval, and pagination state. Refreshing one MUST NOT
+// disrupt the other (no shared cache key, no shared offset, no shared DOM
+// re-render path).
+const ACTIVE_STATUSES = 'active,queued';
+const HISTORY_STATUSES = 'completed,failed,cancelled';
+let historyOffset = 0;
+let historyTotal = 0;
 let selectedOp = null;
 // Per-runtime terminal state: { term, fitAddon, ws, closeTimer, div }
 const terminals = {};
@@ -121,107 +127,129 @@ function renderOpCard(op, container) {
   container.appendChild(card);
 }
 
-async function loadOps() {
+// Compute the status filter for the active list.
+// - No dropdown filter → both active and queued
+// - Dropdown matches an "active-bucket" status → that single status
+// - Dropdown matches a terminal status → active list is empty (filter excludes it)
+function activeStatusFilter(dropdown) {
+  if (!dropdown) return ACTIVE_STATUSES;
+  if (dropdown === 'active' || dropdown === 'queued') return dropdown;
+  return null; // active list shows empty state
+}
+
+// Compute the status filter for the history list.
+// - No dropdown filter → all terminal statuses
+// - Dropdown matches a terminal status → that single status
+// - Dropdown matches an active-bucket status → history list is empty
+function historyStatusFilter(dropdown) {
+  if (!dropdown) return HISTORY_STATUSES;
+  if (dropdown === 'active' || dropdown === 'queued') return null;
+  return dropdown;
+}
+
+function renderEmpty(container, text) {
+  container.innerHTML = `<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">${text}</div>`;
+}
+
+// --- Active list (independent query, frequent polling) ---
+
+async function loadActiveOps() {
   const squad = document.getElementById('filter-squad').value;
-  const status = document.getElementById('filter-status').value;
   const keyword = document.getElementById('filter-keyword').value;
+  const dropdown = document.getElementById('filter-status').value;
 
   const activeList = document.getElementById('active-list');
-  const historyList = document.getElementById('history-list');
-  activeList.innerHTML = '';
-  historyList.innerHTML = '';
+  const filter = activeStatusFilter(dropdown);
+  if (filter === null) {
+    renderEmpty(activeList, 'No active operations match the current filter');
+    return;
+  }
+
+  const params = new URLSearchParams({ limit: '100', offset: '0', status: filter });
+  if (squad) params.set('squad', squad);
+  if (keyword) params.set('q', keyword);
 
   try {
-    // When no status filter is set, fetch active+queued ops separately
-    // so they always appear regardless of pagination
-    let activeOps = [];
-    if (!status) {
-      const activeParams = new URLSearchParams({ limit: '50', offset: '0', status: 'active' });
-      if (squad) activeParams.set('squad', squad);
-      if (keyword) activeParams.set('q', keyword);
-
-      const queuedParams = new URLSearchParams({ limit: '50', offset: '0', status: 'queued' });
-      if (squad) queuedParams.set('squad', squad);
-      if (keyword) queuedParams.set('q', keyword);
-
-      const [activeResp, queuedResp] = await Promise.all([
-        fetch(`/api/ops?${activeParams}`),
-        fetch(`/api/ops?${queuedParams}`)
-      ]);
-      const activeData = await activeResp.json();
-      const queuedData = await queuedResp.json();
-      activeOps = [...(activeData.operations || []), ...(queuedData.operations || [])];
-    }
-
-    // Main paginated fetch for the history list (or filtered view)
-    const params = new URLSearchParams({ limit: '20', offset: '0' });
-    if (squad) params.set('squad', squad);
-    if (status) params.set('status', status);
-    if (keyword) params.set('q', keyword);
-
     const resp = await fetch(`/api/ops?${params}`);
     const data = await resp.json();
-
-    totalOps = data.total;
-    currentOffset = 20;
-
-    if (!status) {
-      // No status filter: active section from dedicated fetch, history from paginated fetch minus active/queued
-      if (activeOps.length === 0) {
-        activeList.innerHTML = '<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">No active operations</div>';
-      }
-      activeOps.forEach(op => renderOpCard(op, activeList));
-
-      const rest = (data.operations || []).filter(op => op.status !== 'active' && op.status !== 'queued');
-      rest.forEach(op => renderOpCard(op, historyList));
-    } else {
-      // Status filter active: show all results in the appropriate section
-      const active = (data.operations || []).filter(op => op.status === 'active' || op.status === 'queued');
-      const rest = (data.operations || []).filter(op => op.status !== 'active' && op.status !== 'queued');
-
-      if (active.length === 0) {
-        activeList.innerHTML = '<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">No active operations</div>';
-      }
-      active.forEach(op => renderOpCard(op, activeList));
-      rest.forEach(op => renderOpCard(op, historyList));
+    const ops = data.operations || [];
+    activeList.innerHTML = '';
+    if (ops.length === 0) {
+      renderEmpty(activeList, 'No active operations');
+      return;
     }
-
-    document.getElementById('load-more').style.display = currentOffset < totalOps ? '' : 'none';
-
-    // Update stats from dedicated endpoint
-    try {
-      const statsResp = await fetch('/api/stats');
-      const stats = await statsResp.json();
-      document.getElementById('stat-active').textContent = `Active: ${(stats.active || 0) + (stats.queued || 0)}`;
-      document.getElementById('stat-completed').textContent = `Completed: ${stats.completed || 0}`;
-      document.getElementById('stat-failed').textContent = `Failed: ${stats.failed || 0}`;
-    } catch(e) {
-      document.getElementById('stat-active').textContent = `Active: ${activeOps.length}`;
-    }
+    ops.forEach(op => renderOpCard(op, activeList));
   } catch(e) {
-    document.getElementById('stat-active').textContent = 'Active: 0';
-    document.getElementById('stat-completed').textContent = 'Completed: 0';
-    document.getElementById('stat-failed').textContent = 'Failed: 0';
+    // Leave previous content intact on transient failure to avoid flicker.
+  }
+}
+
+// --- History list (independent query, refreshes only on user action) ---
+
+async function loadHistoryOps(reset = true) {
+  const squad = document.getElementById('filter-squad').value;
+  const keyword = document.getElementById('filter-keyword').value;
+  const dropdown = document.getElementById('filter-status').value;
+
+  const historyList = document.getElementById('history-list');
+  const loadMoreBtn = document.getElementById('load-more');
+  const filter = historyStatusFilter(dropdown);
+
+  if (filter === null) {
+    renderEmpty(historyList, 'No history matches the current filter');
+    historyOffset = 0;
+    historyTotal = 0;
+    loadMoreBtn.style.display = 'none';
+    return;
+  }
+
+  if (reset) {
+    historyOffset = 0;
+    historyList.innerHTML = '';
+  }
+
+  const params = new URLSearchParams({
+    limit: '20',
+    offset: String(historyOffset),
+    status: filter,
+  });
+  if (squad) params.set('squad', squad);
+  if (keyword) params.set('q', keyword);
+
+  try {
+    const resp = await fetch(`/api/ops?${params}`);
+    const data = await resp.json();
+    const ops = data.operations || [];
+    historyTotal = data.total || 0;
+    ops.forEach(op => renderOpCard(op, historyList));
+    historyOffset += ops.length;
+    if (reset && historyOffset === 0) {
+      renderEmpty(historyList, 'No operations');
+    }
+    loadMoreBtn.style.display = historyOffset < historyTotal ? '' : 'none';
+  } catch(e) {
+    if (reset && historyOffset === 0) {
+      renderEmpty(historyList, 'Failed to load history');
+    }
   }
 }
 
 async function loadMore() {
-  const squad = document.getElementById('filter-squad').value;
-  const status = document.getElementById('filter-status').value;
-  const keyword = document.getElementById('filter-keyword').value;
+  await loadHistoryOps(false);
+}
 
-  const params = new URLSearchParams({ limit: '20', offset: String(currentOffset) });
-  if (squad) params.set('squad', squad);
-  if (status) params.set('status', status);
-  if (keyword) params.set('q', keyword);
+// --- Stats (independent fetch and interval) ---
 
-  const resp = await fetch(`/api/ops?${params}`);
-  const data = await resp.json();
-  currentOffset += 20;
-
-  const historyList = document.getElementById('history-list');
-  (data.operations || []).forEach(op => renderOpCard(op, historyList));
-  document.getElementById('load-more').style.display = currentOffset < totalOps ? '' : 'none';
+async function loadStats() {
+  try {
+    const resp = await fetch('/api/stats');
+    const stats = await resp.json();
+    document.getElementById('stat-active').textContent = `Active: ${(stats.active || 0) + (stats.queued || 0)}`;
+    document.getElementById('stat-completed').textContent = `Completed: ${stats.completed || 0}`;
+    document.getElementById('stat-failed').textContent = `Failed: ${stats.failed || 0}`;
+  } catch(e) {
+    // Keep prior values on transient failure.
+  }
 }
 
 async function loadSquads() {
@@ -352,32 +380,35 @@ function escapeHtml(str) {
 }
 
 // --- Filters ---
+// Filter changes refresh BOTH lists once (each via its own independent query).
+// Subsequent active polling never re-runs the history query.
 let filterTimer;
 function onFilterChange() {
   clearTimeout(filterTimer);
-  filterTimer = setTimeout(loadOps, 300);
+  filterTimer = setTimeout(() => {
+    loadActiveOps();
+    loadHistoryOps(true);
+    loadStats();
+  }, 300);
 }
 document.getElementById('filter-squad').addEventListener('change', onFilterChange);
 document.getElementById('filter-status').addEventListener('change', onFilterChange);
 document.getElementById('filter-keyword').addEventListener('input', onFilterChange);
 
-// --- Stats polling ---
-async function updateStats() {
-  try {
-    const resp = await fetch('/api/ops?limit=0');
-    const data = await resp.json();
-    // Count from filesystem scan
-  } catch(e) {}
-}
-
 // --- Init ---
 loadSquads();
-loadOps();
+loadActiveOps();
+loadHistoryOps(true);
+loadStats();
 initTerminal();
 loadRuntimes();
 
-// Poll active ops every 5s
-setInterval(loadOps, 5000);
+// Independent refresh policies:
+//   - active list polls frequently (live data)
+//   - history list never auto-polls; user pulls via filter change or "Load more"
+//   - stats refresh on a slower cadence
+setInterval(loadActiveOps, 5000);
+setInterval(loadStats, 10000);
 
 async function loadRuntimes() {
   try {

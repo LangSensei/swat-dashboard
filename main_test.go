@@ -157,6 +157,31 @@ func TestHandleOps(t *testing.T) {
 			}
 		}
 	})
+	t.Run("status=active,queued comma list", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/ops?status=active,queued&limit=50", nil)
+		rec := httptest.NewRecorder()
+
+		handleOps(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode JSON: %v", err)
+		}
+
+		if ops, ok := result["operations"].([]interface{}); ok {
+			for i, rawOp := range ops {
+				op := rawOp.(map[string]interface{})
+				s := op["status"]
+				if s != "active" && s != "queued" {
+					t.Errorf("ops[%d]: expected status active|queued, got %q", i, s)
+				}
+			}
+		}
+	})
 }
 
 func TestHandleSquads(t *testing.T) {
