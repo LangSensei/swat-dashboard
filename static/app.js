@@ -286,7 +286,9 @@ async function loadFileContent(opId, filename, tabsDiv) {
     const ext = filename.split('.').pop().toLowerCase();
 
     if (ext === 'md' && typeof marked !== 'undefined') {
-      contentArea.innerHTML = `<div class="md-content">${marked.parse(text)}</div>`;
+      const rawHtml = marked.parse(text);
+      const sanitized = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
+      contentArea.innerHTML = `<div class="md-content">${sanitized}</div>`;
     } else if (ext === 'html' || ext === 'htm') {
       const fileUrl = `/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`;
       contentArea.innerHTML =
@@ -302,7 +304,7 @@ async function loadFileContent(opId, filename, tabsDiv) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // --- Filters ---
