@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // setSessionStoreForTest installs a fresh in-memory-backed SessionStore for
@@ -130,5 +131,97 @@ func TestHandleSessionWSRejectsInactive(t *testing.T) {
 	handleSessionWS(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409 for inactive runtime, got %d", rec.Code)
+	}
+}
+
+// TestHandleRuntimeSwitchSetActiveBeforeTeardown is the regression test for
+// the orphan-PTY race: SetActive(to) MUST be persisted BEFORE the outgoing
+// PTY teardown so that any WS upgrade for the OLD runtime arriving during
+// the multi-second teardown window is rejected by handleSessionWS's
+// pre-upgrade `rt != active` check (issue from PR #30 review).
+//
+// The test stubs lookPathFn / spawnSessionFn (so we don't need a real CLI on
+// PATH) and stubs terminatePTYFn with a slow function. While teardown is
+// blocked inside terminatePTYFn, we fire a WS upgrade for the OUTGOING
+// runtime and assert it gets 409. With the pre-fix code (SetActive AFTER
+// teardown), ActiveRuntime() would still report `copilot` during teardown
+// and the WS upgrade would proceed → orphan PTY.
+func TestHandleRuntimeSwitchSetActiveBeforeTeardown(t *testing.T) {
+	setSessionStoreForTest(t, "copilot")
+
+	// Stub LookPath / spawn so the handler doesn't need real CLIs on PATH.
+	prevLookPath := lookPathFn
+	prevSpawn := spawnSessionFn
+	prevTerminate := terminatePTYFn
+	t.Cleanup(func() {
+		lookPathFn = prevLookPath
+		spawnSessionFn = prevSpawn
+		terminatePTYFn = prevTerminate
+	})
+	lookPathFn = func(string) (string, error) { return "/stub/path", nil }
+	spawnSessionFn = func(string) error { return nil }
+
+	// Inject a fake current PTY so the teardown branch is exercised. We
+	// never call a real method on it because terminatePTYFn is stubbed.
+	sessionsMu.Lock()
+	sessions["copilot"] = &platformPTY{}
+	sessionsMu.Unlock()
+
+	// Coordination: terminatePTYFn blocks until we close `release`. We
+	// observe ActiveRuntime() inside terminatePTYFn AND fire a concurrent
+	// WS request for the outgoing runtime to assert pre-upgrade rejection.
+	teardownEntered := make(chan struct{})
+	release := make(chan struct{})
+	var observedActive string
+	terminatePTYFn = func(p *platformPTY, d time.Duration) {
+		observedActive = sessionStore.ActiveRuntime()
+		close(teardownEntered)
+		<-release
+	}
+
+	switchDone := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/runtime/switch?to=gemini", nil)
+		rec := httptest.NewRecorder()
+		handleRuntimeSwitch(rec, req)
+		switchDone <- rec.Code
+	}()
+
+	// Wait for the switch handler to enter teardown.
+	select {
+	case <-teardownEntered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		<-switchDone
+		t.Fatal("switch handler did not reach teardown within 2s")
+	}
+
+	// At this point SetActive must have already flipped to "gemini".
+	if observedActive != "gemini" {
+		close(release)
+		<-switchDone
+		t.Fatalf("expected ActiveRuntime()==\"gemini\" at teardown entry; got %q (SetActive ran AFTER teardown — race fix regressed)", observedActive)
+	}
+
+	// While teardown is still in flight, a WS upgrade for the OUTGOING
+	// runtime ("copilot") must be rejected by handleSessionWS's pre-upgrade
+	// gate, proving no orphan PTY can be respawned for the old runtime.
+	wsReq := httptest.NewRequest(http.MethodGet, "/ws/session?runtime=copilot", nil)
+	wsReq.Header.Set("Connection", "Upgrade")
+	wsReq.Header.Set("Upgrade", "websocket")
+	wsReq.Header.Set("Sec-WebSocket-Version", "13")
+	wsReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	wsRec := httptest.NewRecorder()
+	handleSessionWS(wsRec, wsReq)
+	if wsRec.Code != http.StatusConflict {
+		close(release)
+		<-switchDone
+		t.Fatalf("expected 409 for WS upgrade against outgoing runtime mid-switch, got %d (orphan-PTY race window still open)", wsRec.Code)
+	}
+
+	// Allow teardown to finish and switch handler to complete.
+	close(release)
+	if code := <-switchDone; code != http.StatusOK {
+		t.Fatalf("expected switch handler to return 200, got %d", code)
 	}
 }

@@ -256,6 +256,18 @@ var (
 // fallback (and by /api/runtimes for stable client rendering).
 var runtimeOrder = []string{"copilot", "gemini"}
 
+// Test-only hooks. These are package vars so individual tests can override
+// them to exercise concurrency-sensitive paths without depending on a real
+// CLI being installed. Production callers are unaffected.
+var (
+	lookPathFn     = exec.LookPath
+	terminatePTYFn = func(p *platformPTY, d time.Duration) { p.Terminate(d) }
+	spawnSessionFn = func(rt string) error {
+		_, _, err := getOrCreateSession(rt, defaultPrompt)
+		return err
+	}
+)
+
 func getOrCreateSession(runtimeName, prompt string) (*platformPTY, *Broadcaster, error) {
 	sessionsMu.Lock()
 	defer sessionsMu.Unlock()
@@ -533,12 +545,25 @@ func handleRuntimeSwitch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := exec.LookPath(to); err != nil {
+	if _, err := lookPathFn(to); err != nil {
 		http.Error(w, fmt.Sprintf("%s CLI not available on PATH", to), http.StatusBadRequest)
 		return
 	}
 
-	// Tear down the currently-active PTY (if any). We snapshot under
+	// IMPORTANT: SetActive(to) MUST happen before the outgoing PTY teardown.
+	// handleSessionWS rejects upgrades whose runtime != active BEFORE
+	// upgrading, so flipping the active marker first guarantees that any WS
+	// connection arriving for `current` during the multi-second teardown
+	// window cannot race ahead and respawn an orphan PTY for the outgoing
+	// runtime (preserving the single-active-runtime invariant). If
+	// SetActive fails we abort cleanly with the old PTY still intact.
+	if err := sessionStore.SetActive(to); err != nil {
+		log.Printf("handleRuntimeSwitch: persist active=%s: %v", to, err)
+		http.Error(w, "failed to persist new active runtime", http.StatusInternalServerError)
+		return
+	}
+
+	// Tear down the previously-active PTY (if any). We snapshot under
 	// sessionsMu but call Terminate / CloseAll outside the lock — Terminate
 	// can block for several seconds and we don't want to block other
 	// session-map readers (e.g. /api/runtimes).
@@ -550,19 +575,13 @@ func handleRuntimeSwitch(w http.ResponseWriter, r *http.Request) {
 	sessionsMu.Unlock()
 
 	if curSess != nil {
-		curSess.Terminate(3 * time.Second)
+		terminatePTYFn(curSess, 3*time.Second)
 	}
 	if curBc != nil {
 		curBc.CloseAll()
 	}
 
-	if err := sessionStore.SetActive(to); err != nil {
-		log.Printf("handleRuntimeSwitch: persist active=%s: %v", to, err)
-		http.Error(w, "failed to persist new active runtime", http.StatusInternalServerError)
-		return
-	}
-
-	if _, _, err := getOrCreateSession(to, defaultPrompt); err != nil {
+	if err := spawnSessionFn(to); err != nil {
 		log.Printf("handleRuntimeSwitch: spawn %s: %v", to, err)
 		http.Error(w, fmt.Sprintf("failed to spawn %s: %v", to, err), http.StatusInternalServerError)
 		return
