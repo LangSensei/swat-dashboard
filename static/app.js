@@ -310,8 +310,6 @@ async function selectOp(op) {
     // File tabs already display the active filename; suppress the redundant
     // heading above the content area to avoid duplication.
     if (labelEl) labelEl.style.display = 'none';
-  } else if (labelEl) {
-    labelEl.style.display = '';
   }
 
   // Default to OPERATION.md if present, otherwise first file
@@ -332,6 +330,8 @@ async function selectOp(op) {
 
 async function loadFileContent(opId, filename, tabsDiv) {
   if (selectedOp !== opId) return;
+  // Tear down any prior iframe's resize listeners before replacing content.
+  teardownActiveIframeResize();
   // Update active tab
   if (tabsDiv) {
     tabsDiv.querySelectorAll('.file-tab').forEach(t => {
@@ -380,7 +380,16 @@ function escapeHtml(str) {
 // Resize iframe to its content height so it scrolls with the parent
 // (#detail-view) instead of showing its own scrollbar. Works for same-origin
 // srcdoc iframes since we can read the contained document directly.
+let activeIframeResizeTeardown = null;
+function teardownActiveIframeResize() {
+  if (activeIframeResizeTeardown) {
+    try { activeIframeResizeTeardown(); } catch (e) {}
+    activeIframeResizeTeardown = null;
+  }
+}
 function attachIframeAutoResize(iframe) {
+  // Make sure we don't stack listeners from a previous iframe.
+  teardownActiveIframeResize();
   let ro = null;
   let lastHeight = 0;
   let winListener = null;
@@ -422,6 +431,17 @@ function attachIframeAutoResize(iframe) {
     setTimeout(resize, 500);
   };
   iframe.addEventListener('load', onLoad);
+  activeIframeResizeTeardown = () => {
+    if (winListener) {
+      window.removeEventListener('resize', winListener);
+      winListener = null;
+    }
+    if (ro) {
+      try { ro.disconnect(); } catch (e) {}
+      ro = null;
+    }
+    iframe.removeEventListener('load', onLoad);
+  };
 }
 
 // --- Filters ---
