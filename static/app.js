@@ -295,6 +295,7 @@ async function selectOp(op) {
 
   // Render file tabs
   const tabsContainer = document.getElementById('file-tabs-container');
+  const labelEl = document.getElementById('file-content-label');
   if (files.length > 0) {
     const tabsDiv = document.createElement('div');
     tabsDiv.className = 'file-tabs';
@@ -306,6 +307,11 @@ async function selectOp(op) {
       tabsDiv.appendChild(tab);
     });
     tabsContainer.appendChild(tabsDiv);
+    // File tabs already display the active filename; suppress the redundant
+    // heading above the content area to avoid duplication.
+    if (labelEl) labelEl.style.display = 'none';
+  } else if (labelEl) {
+    labelEl.style.display = '';
   }
 
   // Default to OPERATION.md if present, otherwise first file
@@ -351,8 +357,13 @@ async function loadFileContent(opId, filename, tabsDiv) {
     } else if (ext === 'html' || ext === 'htm') {
       const fileUrl = `/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`;
       contentArea.innerHTML =
-        `<a href="${escapeHtml(fileUrl)}" target="_blank" class="open-tab-btn">Open in new tab &#8599;</a>` +
-        `<iframe srcdoc="${escapeHtml(text)}" sandbox="allow-same-origin" class="html-frame"></iframe>`;
+        `<a href="${escapeHtml(fileUrl)}" target="_blank" class="open-tab-btn">Open in new tab &#8599;</a>`;
+      const iframe = document.createElement('iframe');
+      iframe.className = 'html-frame';
+      iframe.setAttribute('sandbox', 'allow-same-origin');
+      iframe.srcdoc = text;
+      attachIframeAutoResize(iframe);
+      contentArea.appendChild(iframe);
     } else {
       contentArea.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
     }
@@ -364,6 +375,53 @@ async function loadFileContent(opId, filename, tabsDiv) {
 
 function escapeHtml(str) {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Resize iframe to its content height so it scrolls with the parent
+// (#detail-view) instead of showing its own scrollbar. Works for same-origin
+// srcdoc iframes since we can read the contained document directly.
+function attachIframeAutoResize(iframe) {
+  let ro = null;
+  let lastHeight = 0;
+  let winListener = null;
+  const onLoad = () => {
+    let doc;
+    try { doc = iframe.contentDocument; } catch (e) { return; }
+    if (!doc) return;
+    try {
+      const styleEl = doc.createElement('style');
+      styleEl.textContent = 'html,body{margin:0;overflow:hidden;}body{min-height:0;}';
+      (doc.head || doc.documentElement).appendChild(styleEl);
+    } catch (e) {}
+    const resize = () => {
+      let doc2;
+      try { doc2 = iframe.contentDocument; } catch (e) { return; }
+      if (!doc2 || !doc2.documentElement) return;
+      const h = Math.max(
+        doc2.documentElement.scrollHeight,
+        doc2.body ? doc2.body.scrollHeight : 0
+      );
+      if (h && h !== lastHeight) {
+        lastHeight = h;
+        iframe.style.height = h + 'px';
+      }
+    };
+    resize();
+    if (window.ResizeObserver) {
+      try {
+        if (ro) ro.disconnect();
+        ro = new ResizeObserver(resize);
+        if (doc.body) ro.observe(doc.body);
+        ro.observe(doc.documentElement);
+      } catch (e) {}
+    }
+    if (winListener) window.removeEventListener('resize', winListener);
+    winListener = () => resize();
+    window.addEventListener('resize', winListener);
+    setTimeout(resize, 100);
+    setTimeout(resize, 500);
+  };
+  iframe.addEventListener('load', onLoad);
 }
 
 // --- Filters ---
