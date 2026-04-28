@@ -48,7 +48,7 @@ function Fetch-Release {
     # Check if already installed at this version
     try {
         $current = & (Join-Path $BinDir "swat-dashboard.exe") --version 2>$null
-        if ($current -match $tag) {
+        if ($current -like "*$tag*") {
             Ok "Already up to date ($tag)"
             exit 0
         }
