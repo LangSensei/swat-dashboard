@@ -255,6 +255,11 @@ async function selectOp(op) {
   selectedOp = op.id;
   showTab('detail');
 
+  // Tear down any prior iframe's resize listeners before rebuilding
+  // #file-content-area; covers branches (e.g. zero-files op) that don't
+  // delegate to loadFileContent.
+  teardownActiveIframeResize();
+
   document.getElementById('detail-empty').style.display = 'none';
   const content = document.getElementById('detail-content');
   content.style.display = '';
