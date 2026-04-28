@@ -37,6 +37,18 @@ func (b *Broadcaster) Unsubscribe(id int) {
 	}
 }
 
+// CloseAll drops every subscriber so existing WS goroutines unblock and
+// return. Used by the runtime switch path so old WS clients receive close
+// frames and reconnect against the new active runtime.
+func (b *Broadcaster) CloseAll() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for id, ch := range b.clients {
+		close(ch)
+		delete(b.clients, id)
+	}
+}
+
 func (b *Broadcaster) broadcast(data []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -60,6 +72,16 @@ func (b *Broadcaster) Start(pty *platformPTY, onExit func()) {
 	b.running = true
 	b.mu.Unlock()
 
+	// Wrap onExit in sync.Once so an explicit teardown (e.g. runtime switch)
+	// followed by the PTY-EOF path does not double-invoke cleanup and
+	// double-delete from the sessions/broadcasters maps.
+	var once sync.Once
+	fire := func() {
+		if onExit != nil {
+			once.Do(onExit)
+		}
+	}
+
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -69,9 +91,7 @@ func (b *Broadcaster) Start(pty *platformPTY, onExit func()) {
 			}
 			if err != nil {
 				b.broadcast([]byte("\r\n[Session ended]"))
-				if onExit != nil {
-					onExit()
-				}
+				fire()
 				return
 			}
 		}

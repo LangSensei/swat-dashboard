@@ -236,9 +236,36 @@ const defaultPrompt = `You are a SWAT dashboard operator. Wait for user instruct
 // --- PTY session manager ---
 
 var (
-	sessions      = make(map[string]*platformPTY)
-	broadcasters  = make(map[string]*Broadcaster)
-	sessionsMu    sync.Mutex
+	sessions     = make(map[string]*platformPTY)
+	broadcasters = make(map[string]*Broadcaster)
+	sessionsMu   sync.Mutex
+
+	// switchMu serialises POST /api/runtime/switch. It is intentionally
+	// distinct from sessionsMu — switch runs the full tear-down + spawn dance
+	// (which acquires sessionsMu inside getOrCreateSession), so reusing
+	// sessionsMu here would deadlock. switchMu is used with TryLock so
+	// concurrent UI clicks return 409 instead of queueing.
+	switchMu sync.Mutex
+
+	// sessionStore holds the persistent runtime-id state. It is loaded once
+	// at startup.
+	sessionStore *SessionStore
+)
+
+// runtimeOrder defines the canonical ordering used by autoStartActiveSession's
+// fallback (and by /api/runtimes for stable client rendering).
+var runtimeOrder = []string{"copilot", "gemini"}
+
+// Test-only hooks. These are package vars so individual tests can override
+// them to exercise concurrency-sensitive paths without depending on a real
+// CLI being installed. Production callers are unaffected.
+var (
+	lookPathFn     = exec.LookPath
+	terminatePTYFn = func(p *platformPTY, d time.Duration) { p.Terminate(d) }
+	spawnSessionFn = func(rt string) error {
+		_, _, err := getOrCreateSession(rt, defaultPrompt)
+		return err
+	}
 )
 
 func getOrCreateSession(runtimeName, prompt string) (*platformPTY, *Broadcaster, error) {
@@ -247,6 +274,23 @@ func getOrCreateSession(runtimeName, prompt string) (*platformPTY, *Broadcaster,
 
 	if sess, ok := sessions[runtimeName]; ok {
 		return sess, broadcasters[runtimeName], nil
+	}
+
+	// Re-check active runtime under sessionsMu to seal the residual race
+	// window in handleSessionWS between its pre-upgrade `rt != active`
+	// check and this call: an in-flight WS upgrader that already passed
+	// the pre-check can be context-switched out long enough for
+	// handleRuntimeSwitch to flip SetActive(to); without this gate it
+	// would resume here and spawn a fresh PTY for the now-outgoing
+	// runtime, violating the single-active-runtime invariant. Safe for
+	// all three call sites: the WS upgrade rejects late races,
+	// handleRuntimeSwitch's spawnSessionFn proceeds because SetActive(to)
+	// already ran, and autoStartActiveSession proceeds for the active
+	// runtime it just selected.
+	if sessionStore != nil {
+		if active := sessionStore.ActiveRuntime(); active != "" && active != runtimeName {
+			return nil, nil, fmt.Errorf("runtime %q is not active (active=%q)", runtimeName, active)
+		}
 	}
 
 	if prompt == "" {
@@ -270,22 +314,48 @@ func getOrCreateSession(runtimeName, prompt string) (*platformPTY, *Broadcaster,
 	return sess, bc, nil
 }
 
-func autoStartSessions() {
-	for _, rt := range []string{"copilot", "gemini"} {
-		if _, err := exec.LookPath(rt); err == nil {
-			_, _, err := getOrCreateSession(rt, defaultPrompt)
-			if err != nil {
-				log.Printf("Failed to auto-start %s: %v", rt, err)
-			} else {
-				log.Printf("Auto-started %s session", rt)
+// autoStartActiveSession spawns exactly one PTY at boot, picking the persisted
+// active runtime if its CLI is on PATH, else the first available runtime in
+// runtimeOrder. If no CLI is installed it logs a warning and skips — the UI
+// will surface this through /api/runtimes.
+func autoStartActiveSession() {
+	if sessionStore == nil {
+		log.Printf("autoStartActiveSession: session store not initialised")
+		return
+	}
+	preferred := sessionStore.ActiveRuntime()
+	pick := ""
+	if preferred != "" {
+		if _, err := exec.LookPath(preferred); err == nil {
+			pick = preferred
+		}
+	}
+	if pick == "" {
+		for _, rt := range runtimeOrder {
+			if _, err := exec.LookPath(rt); err == nil {
+				pick = rt
+				break
 			}
 		}
 	}
+	if pick == "" {
+		log.Printf("autoStartActiveSession: no CLI runtime available on PATH; skipping auto-start")
+		return
+	}
+	if pick != preferred {
+		if err := sessionStore.SetActive(pick); err != nil {
+			log.Printf("autoStartActiveSession: persist active=%s: %v", pick, err)
+		}
+	}
+	if _, _, err := getOrCreateSession(pick, defaultPrompt); err != nil {
+		log.Printf("autoStartActiveSession: spawn %s: %v", pick, err)
+		return
+	}
+	log.Printf("autoStartActiveSession: started %s session", pick)
 }
 
 func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	var cmdName string
-	var args []string
 	switch runtimeName {
 	case "copilot":
 		cmdName = "copilot"
@@ -295,11 +365,22 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 		return nil, fmt.Errorf("unknown runtime: %s", runtimeName)
 	}
 
-	// Check if CLI exists
 	if _, err := exec.LookPath(cmdName); err != nil {
 		return nil, fmt.Errorf("%s CLI not found. Please install it first", cmdName)
 	}
 
+	// `--resume <guid>` MUST come first so neither CLI's flag parser confuses
+	// it with the operator prompt that follows. Both copilot and gemini accept
+	// `--resume` together with `-i prompt` (resume restores conversation
+	// history; `-i` injects the operator-level system prompt). Issue #29
+	// confirms this orthogonality.
+	var args []string
+	if sessionStore != nil {
+		guid := sessionStore.GUIDFor(runtimeName)
+		if guid != "" {
+			args = append(args, "--resume", guid)
+		}
+	}
 	if prompt != "" {
 		args = append(args, "-i", prompt)
 	}
@@ -421,18 +502,118 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRuntimes(w http.ResponseWriter, r *http.Request) {
+	active := ""
+	if sessionStore != nil {
+		active = sessionStore.ActiveRuntime()
+	}
 	runtimes := []map[string]interface{}{}
 	for _, rt := range []struct{ name, cmd string }{
 		{"copilot", "copilot"},
 		{"gemini", "gemini"},
 	} {
 		_, err := exec.LookPath(rt.cmd)
-		runtimes = append(runtimes, map[string]interface{}{
+		entry := map[string]interface{}{
 			"name":      rt.name,
 			"available": err == nil,
-		})
+			"active":    rt.name == active,
+		}
+		if sessionStore != nil {
+			entry["session_id"] = sessionStore.GUIDFor(rt.name)
+		}
+		runtimes = append(runtimes, entry)
 	}
 	json.NewEncoder(w).Encode(runtimes)
+}
+
+// handleRuntimeSwitch atomically tears down the current active PTY and brings
+// up a new one for ?to=<runtime>. Concurrent calls return 409 instead of
+// queueing so the UI can surface the contention as a toast.
+func handleRuntimeSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	to := r.URL.Query().Get("to")
+	if to != "copilot" && to != "gemini" {
+		http.Error(w, "unknown runtime", http.StatusBadRequest)
+		return
+	}
+	if sessionStore == nil {
+		http.Error(w, "session store not initialised", http.StatusInternalServerError)
+		return
+	}
+
+	if !switchMu.TryLock() {
+		http.Error(w, "switch already in progress", http.StatusConflict)
+		return
+	}
+	defer switchMu.Unlock()
+
+	current := sessionStore.ActiveRuntime()
+	if to == current {
+		// No-op: report current state. We still validate that the active PTY
+		// actually exists; if it doesn't, fall through to spawn.
+		sessionsMu.Lock()
+		_, exists := sessions[to]
+		sessionsMu.Unlock()
+		if exists {
+			writeSwitchResponse(w, to, sessionStore.GUIDFor(to))
+			return
+		}
+	}
+
+	if _, err := lookPathFn(to); err != nil {
+		http.Error(w, fmt.Sprintf("%s CLI not available on PATH", to), http.StatusBadRequest)
+		return
+	}
+
+	// IMPORTANT: SetActive(to) MUST happen before the outgoing PTY teardown.
+	// handleSessionWS rejects upgrades whose runtime != active BEFORE
+	// upgrading, and getOrCreateSession re-checks under sessionsMu, so
+	// flipping the active marker first guarantees that any WS connection
+	// arriving for `current` during the multi-second teardown window
+	// cannot race ahead and respawn an orphan PTY for the outgoing
+	// runtime (preserving the single-active-runtime invariant — both the
+	// pre-upgrade gate and the post-lock gate must agree). If
+	// SetActive fails we abort cleanly with the old PTY still intact.
+	if err := sessionStore.SetActive(to); err != nil {
+		log.Printf("handleRuntimeSwitch: persist active=%s: %v", to, err)
+		http.Error(w, "failed to persist new active runtime", http.StatusInternalServerError)
+		return
+	}
+
+	// Tear down the previously-active PTY (if any). We snapshot under
+	// sessionsMu but call Terminate / CloseAll outside the lock — Terminate
+	// can block for several seconds and we don't want to block other
+	// session-map readers (e.g. /api/runtimes).
+	sessionsMu.Lock()
+	curSess := sessions[current]
+	curBc := broadcasters[current]
+	delete(sessions, current)
+	delete(broadcasters, current)
+	sessionsMu.Unlock()
+
+	if curSess != nil {
+		terminatePTYFn(curSess, 3*time.Second)
+	}
+	if curBc != nil {
+		curBc.CloseAll()
+	}
+
+	if err := spawnSessionFn(to); err != nil {
+		log.Printf("handleRuntimeSwitch: spawn %s: %v", to, err)
+		http.Error(w, fmt.Sprintf("failed to spawn %s: %v", to, err), http.StatusInternalServerError)
+		return
+	}
+	writeSwitchResponse(w, to, sessionStore.GUIDFor(to))
+}
+
+func writeSwitchResponse(w http.ResponseWriter, runtime, sessionID string) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"active":     runtime,
+		"session_id": sessionID,
+	})
 }
 
 func handleSessionWS(w http.ResponseWriter, r *http.Request) {
@@ -440,6 +621,17 @@ func handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	if rt == "" {
 		rt = "copilot"
 	}
+
+	// Reject WS for non-active runtimes BEFORE upgrading. The frontend must
+	// call POST /api/runtime/switch first; WS never implicitly switches the
+	// active runtime (issue #29 contract).
+	if sessionStore != nil {
+		if active := sessionStore.ActiveRuntime(); active != "" && rt != active {
+			http.Error(w, fmt.Sprintf("runtime %q is not active (active=%q)", rt, active), http.StatusConflict)
+			return
+		}
+	}
+
 	prompt := r.URL.Query().Get("prompt")
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -530,11 +722,20 @@ func main() {
 	http.HandleFunc("/api/files", handleOpFiles)
 	http.HandleFunc("/api/file", handleOpFile)
 	http.HandleFunc("/api/runtimes", handleRuntimes)
+	http.HandleFunc("/api/runtime/switch", handleRuntimeSwitch)
 	http.HandleFunc("/ws/session", handleSessionWS)
 
 	// Static files
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	http.Handle("/", http.FileServer(http.FS(staticFS)))
+
+	// Load persistent session-id store before spawning anything that depends
+	// on --resume <guid>.
+	store, err := LoadOrInitStore()
+	if err != nil {
+		log.Fatalf("Failed to load session store: %v", err)
+	}
+	sessionStore = store
 
 	// Start
 	listener, err := net.Listen("tcp", ":"+port)
@@ -545,20 +746,47 @@ func main() {
 	url := fmt.Sprintf("http://localhost:%s", port)
 	fmt.Printf("SWAT Dashboard %s running at %s\n", version, url)
 
-	// Auto-start available CLI sessions
-	autoStartSessions()
+	// Auto-start the single active CLI session (one runtime at a time).
+	autoStartActiveSession()
 
 	openBrowser(url)
 
-	// Graceful shutdown
+	// Graceful shutdown: cleanly terminate the active PTY (and any others
+	// that may have been spawned) before exiting so we don't leave orphaned
+	// CLI processes around.
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		fmt.Println("\nShutting down...")
+		shutdownSessions()
 		listener.Close()
 		os.Exit(0)
 	}()
 
 	log.Fatal(http.Serve(listener, nil))
+}
+
+// shutdownSessions terminates every live PTY with a short bounded timeout so
+// we don't leave orphaned CLI processes when the dashboard exits. Safe to
+// call multiple times.
+func shutdownSessions() {
+	sessionsMu.Lock()
+	snapshot := make([]*platformPTY, 0, len(sessions))
+	bcs := make([]*Broadcaster, 0, len(broadcasters))
+	for k, s := range sessions {
+		snapshot = append(snapshot, s)
+		if bc, ok := broadcasters[k]; ok {
+			bcs = append(bcs, bc)
+		}
+		delete(sessions, k)
+		delete(broadcasters, k)
+	}
+	sessionsMu.Unlock()
+	for _, s := range snapshot {
+		s.Terminate(2 * time.Second)
+	}
+	for _, bc := range bcs {
+		bc.CloseAll()
+	}
 }

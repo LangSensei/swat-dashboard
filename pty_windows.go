@@ -3,11 +3,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	conpty "github.com/UserExistsError/conpty"
 )
@@ -26,7 +29,6 @@ func quoteArg(a string) string {
 }
 
 func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
-	// Resolve the actual executable path
 	resolved, err := exec.LookPath(cmd.Args[0])
 	if err != nil {
 		resolved = cmd.Args[0]
@@ -37,8 +39,6 @@ func startPTY(cmd *exec.Cmd) (*platformPTY, error) {
 	isBatch := strings.HasSuffix(lower, ".cmd") || strings.HasSuffix(lower, ".bat")
 
 	if isBatch {
-		// .cmd/.bat: run via cmd.exe, but keep stdin alive
-		// Build: cmd.exe /c "full\path\copilot.cmd" -i "prompt" --yolo
 		parts = append(parts, "cmd.exe", "/c")
 		parts = append(parts, quoteArg(resolved))
 		for _, a := range cmd.Args[1:] {
@@ -75,4 +75,40 @@ func (p *platformPTY) Resize(cols, rows int) {
 
 func (p *platformPTY) Close() {
 	p.cpty.Close()
+}
+
+// Terminate gracefully signals the conpty-attached process tree (taskkill /T,
+// without /F, sends a WM_CLOSE-style request to console processes), waits up
+// to timeout for it to exit, and only then escalates to taskkill /T /F. This
+// mirrors the Unix SIGTERM → wait → SIGKILL pattern so callers get the same
+// "graceful first, then force" contract on both platforms. The pty handle is
+// closed last so the broadcaster's Read loop unblocks once the process is
+// gone.
+func (p *platformPTY) Terminate(timeout time.Duration) {
+	pid := p.cpty.Pid()
+	if pid != 0 {
+		// Step 1: graceful tree termination. Errors are intentionally
+		// swallowed because the process may already have exited.
+		_ = exec.Command("taskkill", "/T", "/PID", strconv.Itoa(pid)).Run()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	exited := make(chan struct{})
+	go func() {
+		_, _ = p.cpty.Wait(ctx)
+		close(exited)
+	}()
+
+	select {
+	case <-exited:
+		// Graceful exit (or already dead) within timeout.
+	case <-ctx.Done():
+		// Timed out — escalate to forceful tree kill.
+		if pid != 0 {
+			_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
+		}
+		<-exited
+	}
+	_ = p.cpty.Close()
 }
