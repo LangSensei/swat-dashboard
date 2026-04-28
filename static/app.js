@@ -383,7 +383,8 @@ async function loadFileContent(opId, filename, tabsDiv) {
     const ext = filename.split('.').pop().toLowerCase();
 
     if (ext === 'md' && typeof marked !== 'undefined') {
-      const rawHtml = marked.parse(text);
+      const body = typeof stripFrontmatter === 'function' ? stripFrontmatter(text) : text;
+      const rawHtml = marked.parse(body);
       const sanitized = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
       contentArea.innerHTML = `<div class="md-content">${sanitized}</div>`;
     } else if (ext === 'html' || ext === 'htm') {
