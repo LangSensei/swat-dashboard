@@ -294,9 +294,16 @@ async function loadOps() {
 
   document.getElementById('load-more').style.display = currentOffset < totalOps ? '' : 'none';
 
-  // Update stats
-  const allOps = data.operations || [];
-  document.getElementById('stat-active').textContent = `Active: ${active.length}`;
+  // Update stats from dedicated endpoint
+  try {
+    const statsResp = await fetch('/api/stats');
+    const stats = await statsResp.json();
+    document.getElementById('stat-active').textContent = `Active: ${(stats.active || 0) + (stats.queued || 0)}`;
+    document.getElementById('stat-completed').textContent = `Completed: ${stats.completed || 0}`;
+    document.getElementById('stat-failed').textContent = `Failed: ${stats.failed || 0}`;
+  } catch(e) {
+    document.getElementById('stat-active').textContent = `Active: ${active.length}`;
+  }
 }
 
 async function loadMore() {

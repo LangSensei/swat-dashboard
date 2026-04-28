@@ -234,6 +234,16 @@ func homeDir() string {
 
 // --- HTTP Handlers ---
 
+// handleStats returns operation counts by status.
+func handleStats(w http.ResponseWriter, r *http.Request) {
+	all, _ := operation.List()
+	counts := map[string]int{"active": 0, "queued": 0, "completed": 0, "failed": 0}
+	for _, op := range all {
+		counts[op.Status]++
+	}
+	json.NewEncoder(w).Encode(counts)
+}
+
 func handleOps(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	squad := q.Get("squad")
@@ -373,6 +383,7 @@ func main() {
 	}
 
 	// API routes
+	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/ops", handleOps)
 	http.HandleFunc("/api/squads", handleSquads)
 	http.HandleFunc("/api/file", handleOpFile)
