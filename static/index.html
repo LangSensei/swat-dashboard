@@ -75,6 +75,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .detail-value { font-size: 14px; line-height: 1.6; }
 .detail-value pre { background: var(--bg2); padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 
+/* File tabs */
+.file-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.file-tab { padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--fg2); background: transparent; border: 1px solid transparent; font-family: monospace; }
+.file-tab:hover { background: var(--bg3); }
+.file-tab.active { background: var(--bg3); color: var(--fg); border-color: var(--border); }
+
 /* Empty state */
 .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--fg2); font-size: 14px; }
 </style>
@@ -345,39 +351,85 @@ async function selectOp(op) {
   const content = document.getElementById('detail-content');
   content.style.display = '';
 
-  // Load OPERATION.md
-  const resp = await fetch(`/api/file?op=${op.id}&file=OPERATION.md`);
-  const text = resp.ok ? await resp.text() : 'Failed to load';
-
-  content.innerHTML = `
+  // Build metadata section
+  let html = `
     <div class="detail-field">
       <div class="detail-label">Operation</div>
-      <div class="detail-value">${op.id} &nbsp; <span class="status-dot ${op.status}"></span>${op.status}</div>
+      <div class="detail-value">${escapeHtml(op.id)} &nbsp; <span class="status-dot ${op.status}"></span>${escapeHtml(op.status)}</div>
     </div>
     <div class="detail-field">
       <div class="detail-label">Squad</div>
-      <div class="detail-value">${op.squad}</div>
+      <div class="detail-value">${escapeHtml(op.squad)}</div>
     </div>
     <div class="detail-field">
       <div class="detail-label">Brief</div>
-      <div class="detail-value">${op.brief || '—'}</div>
+      <div class="detail-value">${escapeHtml(op.brief || '—')}</div>
     </div>
-    ${op.summary ? `<div class="detail-field"><div class="detail-label">Summary</div><div class="detail-value">${op.summary}</div></div>` : ''}
+    ${op.summary ? `<div class="detail-field"><div class="detail-label">Summary</div><div class="detail-value">${escapeHtml(op.summary)}</div></div>` : ''}
     <div class="detail-field">
       <div class="detail-label">Duration</div>
-      <div class="detail-value">${op.elapsed || '—'} &nbsp; (${op.created_at || '?'} → ${op.completed_at || 'running'})</div>
+      <div class="detail-value">${escapeHtml(op.elapsed || '—')} &nbsp; (${escapeHtml(op.created_at || '?')} → ${escapeHtml(op.completed_at || 'running')})</div>
     </div>
+    <div id="file-tabs-container"></div>
     <div class="detail-field">
-      <div class="detail-label">OPERATION.md</div>
-      <div class="detail-value"><pre>${escapeHtml(text)}</pre></div>
+      <div id="file-content-label" class="detail-label">OPERATION.md</div>
+      <div class="detail-value"><pre id="file-content-pre">Loading...</pre></div>
     </div>
   `;
+  content.innerHTML = html;
+
+  // Fetch file list
+  let files = [];
+  try {
+    const filesResp = await fetch(`/api/files?op=${encodeURIComponent(op.id)}`);
+    if (filesResp.ok) files = await filesResp.json();
+  } catch(e) {}
+
+  // Render file tabs
+  const tabsContainer = document.getElementById('file-tabs-container');
+  if (files.length > 0) {
+    const tabsDiv = document.createElement('div');
+    tabsDiv.className = 'file-tabs';
+    files.forEach(f => {
+      const tab = document.createElement('span');
+      tab.className = 'file-tab';
+      tab.textContent = f;
+      tab.onclick = () => loadFileContent(op.id, f, tabsDiv);
+      tabsDiv.appendChild(tab);
+    });
+    tabsContainer.appendChild(tabsDiv);
+  }
+
+  // Default to OPERATION.md if present, otherwise first file
+  const defaultFile = files.includes('OPERATION.md') ? 'OPERATION.md' : (files[0] || 'OPERATION.md');
+  loadFileContent(op.id, defaultFile, tabsContainer.querySelector('.file-tabs'));
 
   // Highlight selected card
   document.querySelectorAll('.op-card').forEach(c => c.classList.remove('selected'));
   document.querySelectorAll('.op-card').forEach(c => {
     if (c.querySelector('.op-id')?.textContent === op.id) c.classList.add('selected');
   });
+}
+
+async function loadFileContent(opId, filename, tabsDiv) {
+  if (selectedOp !== opId) return;
+  // Update active tab
+  if (tabsDiv) {
+    tabsDiv.querySelectorAll('.file-tab').forEach(t => {
+      t.classList.toggle('active', t.textContent === filename);
+    });
+  }
+  document.getElementById('file-content-label').textContent = filename;
+  const pre = document.getElementById('file-content-pre');
+  pre.textContent = 'Loading...';
+  try {
+    const resp = await fetch(`/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`);
+    if (selectedOp !== opId) return;
+    pre.textContent = resp.ok ? await resp.text() : 'Failed to load';
+  } catch(e) {
+    if (selectedOp !== opId) return;
+    pre.textContent = 'Failed to load';
+  }
 }
 
 function escapeHtml(str) {

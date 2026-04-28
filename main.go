@@ -128,12 +128,11 @@ func listSquads() []string {
 }
 
 func readOpFile(opId, filename string) (string, error) {
-	op, err := operation.Find(opId)
+	dir, err := opDir(opId)
 	if err != nil {
 		return "", err
 	}
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".swat", "squads", op.Squad, "operations", opId, filename)
+	path := filepath.Join(dir, filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -273,6 +272,50 @@ func handleSquads(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(listSquads())
 }
 
+// opDir returns the filesystem path for a given operation ID.
+func opDir(opID string) (string, error) {
+	op, err := operation.Find(opID)
+	if err != nil {
+		return "", err
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".swat", "squads", op.Squad, "operations", opID), nil
+}
+
+// handleOpFiles returns a JSON array of non-hidden file names in the operation directory.
+func handleOpFiles(w http.ResponseWriter, r *http.Request) {
+	opID := r.URL.Query().Get("op")
+	if opID == "" {
+		http.Error(w, "missing op", 400)
+		return
+	}
+	dir, err := opDir(opID)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "not found", 404)
+		} else {
+			http.Error(w, "internal error", 500)
+		}
+		return
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		files = append(files, e.Name())
+	}
+	if files == nil {
+		files = []string{}
+	}
+	json.NewEncoder(w).Encode(files)
+}
+
 func handleOpFile(w http.ResponseWriter, r *http.Request) {
 	opId := r.URL.Query().Get("op")
 	file := r.URL.Query().Get("file")
@@ -398,6 +441,7 @@ func main() {
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/ops", handleOps)
 	http.HandleFunc("/api/squads", handleSquads)
+	http.HandleFunc("/api/files", handleOpFiles)
 	http.HandleFunc("/api/file", handleOpFile)
 	http.HandleFunc("/api/runtimes", handleRuntimes)
 	http.HandleFunc("/ws/session", handleSessionWS)
