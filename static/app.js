@@ -227,7 +227,7 @@ async function selectOp(op) {
     <div id="file-tabs-container"></div>
     <div class="detail-field">
       <div id="file-content-label" class="detail-label">OPERATION.md</div>
-      <div class="detail-value"><pre id="file-content-pre">Loading...</pre></div>
+      <div class="detail-value"><div id="file-content-area"><pre>Loading...</pre></div></div>
     </div>
   `;
   content.innerHTML = html;
@@ -274,20 +274,37 @@ async function loadFileContent(opId, filename, tabsDiv) {
     });
   }
   document.getElementById('file-content-label').textContent = filename;
-  const pre = document.getElementById('file-content-pre');
-  pre.textContent = 'Loading...';
+
+  const contentArea = document.getElementById('file-content-area');
+  contentArea.innerHTML = '<pre>Loading...</pre>';
+
   try {
     const resp = await fetch(`/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`);
     if (selectedOp !== opId) return;
-    pre.textContent = resp.ok ? await resp.text() : 'Failed to load';
+    const text = resp.ok ? await resp.text() : 'Failed to load';
+
+    const ext = filename.split('.').pop().toLowerCase();
+
+    if (ext === 'md' && typeof marked !== 'undefined') {
+      const rawHtml = marked.parse(text);
+      const sanitized = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
+      contentArea.innerHTML = `<div class="md-content">${sanitized}</div>`;
+    } else if (ext === 'html' || ext === 'htm') {
+      const fileUrl = `/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`;
+      contentArea.innerHTML =
+        `<a href="${escapeHtml(fileUrl)}" target="_blank" class="open-tab-btn">Open in new tab &#8599;</a>` +
+        `<iframe srcdoc="${escapeHtml(text)}" sandbox="allow-same-origin" class="html-frame"></iframe>`;
+    } else {
+      contentArea.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
+    }
   } catch(e) {
     if (selectedOp !== opId) return;
-    pre.textContent = 'Failed to load';
+    contentArea.innerHTML = '<pre>Failed to load</pre>';
   }
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // --- Filters ---
