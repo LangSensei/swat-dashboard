@@ -103,20 +103,15 @@ func TestHandleSquads(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 
-	// Response must be a valid JSON array
-	var result []interface{}
-	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		// Could be null if no squads — try decoding as null
-		rec2 := httptest.NewRecorder()
-		req2 := httptest.NewRequest(http.MethodGet, "/api/squads", nil)
-		handleSquads(rec2, req2)
-
-		var raw json.RawMessage
-		if err2 := json.NewDecoder(rec2.Body).Decode(&raw); err2 != nil {
-			t.Fatalf("failed to decode JSON: %v (original: %v)", err2, err)
-		}
-		// null is valid
-		if string(raw) != "null" {
+	// Decode into RawMessage first, then check if it's null or an array
+	body := rec.Body.Bytes()
+	var raw json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("failed to decode JSON: %v", err)
+	}
+	if string(raw) != "null" {
+		var result []interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
 			t.Fatalf("expected JSON array or null, got: %s", string(raw))
 		}
 	}
@@ -137,8 +132,8 @@ func TestHandleRuntimes(t *testing.T) {
 		t.Fatalf("failed to decode JSON: %v", err)
 	}
 
-	if len(result) == 0 {
-		t.Fatal("expected at least one runtime entry")
+	if len(result) != 2 {
+		t.Fatalf("expected exactly 2 runtime entries (copilot, gemini), got %d", len(result))
 	}
 
 	for i, rt := range result {
