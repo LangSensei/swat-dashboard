@@ -236,7 +236,7 @@ async function selectOp(op) {
   let files = [];
   try {
     const filesResp = await fetch(`/api/files?op=${encodeURIComponent(op.id)}`);
-    if (filesResp.ok) files = await filesResp.json();
+    if (filesResp.ok) files = (await filesResp.json()) || [];
   } catch(e) {}
 
   // Render file tabs
@@ -255,8 +255,13 @@ async function selectOp(op) {
   }
 
   // Default to OPERATION.md if present, otherwise first file
-  const defaultFile = files.includes('OPERATION.md') ? 'OPERATION.md' : (files[0] || 'OPERATION.md');
-  loadFileContent(op.id, defaultFile, tabsContainer.querySelector('.file-tabs'));
+  if (files.length > 0) {
+    const defaultFile = files.includes('OPERATION.md') ? 'OPERATION.md' : files[0];
+    loadFileContent(op.id, defaultFile, tabsContainer.querySelector('.file-tabs'));
+  } else {
+    document.getElementById('file-content-label').textContent = '';
+    document.getElementById('file-content-pre').textContent = 'No files available';
+  }
 
   // Highlight selected card
   document.querySelectorAll('.op-card').forEach(c => c.classList.remove('selected'));
