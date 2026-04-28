@@ -180,3 +180,30 @@ func TestFrontmatterString_NonStringIgnored(t *testing.T) {
 		t.Errorf("nil meta returned %q", got)
 	}
 }
+
+func TestNeedsFrontmatterReparse(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty", "", false},
+		{"plain text", "all good here", false},
+		{"plain with newline", "line one\nline two", false},
+		{"literal block marker", "|\n  multi\n  line", true},
+		{"folded block marker", ">\n  multi\n  line", true},
+		{"literal with chomping", "|-\n  trimmed", true},
+		{"folded with keep", ">+\n  kept\n", true},
+		{"leading whitespace then marker", "   |\n  body", true},
+		{"leading tab then marker", "\t>\n  body", true},
+		{"only whitespace", "   \t  ", false},
+		{"marker not at start", "see |x|", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsFrontmatterReparse(tc.in); got != tc.want {
+				t.Errorf("needsFrontmatterReparse(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

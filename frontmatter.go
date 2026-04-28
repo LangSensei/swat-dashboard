@@ -122,3 +122,24 @@ func frontmatterString(meta map[string]any, key string) string {
 	}
 	return ""
 }
+
+// needsFrontmatterReparse reports whether a string field looks like it still
+// carries a raw YAML block-scalar indicator (`|` or `>`, optionally followed
+// by chomping/indent indicators). When the upstream operation package returns
+// such a value verbatim, callers must re-parse OPERATION.md with a real YAML
+// parser; otherwise the leading marker would leak into the UI.
+//
+// Returns false for plain strings (the common case) so callers can skip the
+// expensive file-read + YAML parse on every list call.
+func needsFrontmatterReparse(s string) bool {
+	// Strip leading horizontal whitespace; a YAML scalar may be written as
+	// `summary:   |` and the upstream package may or may not trim that.
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i >= len(s) {
+		return false
+	}
+	return s[i] == '|' || s[i] == '>'
+}

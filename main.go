@@ -56,18 +56,21 @@ func opToView(op *operation.Operation) OpView {
 		Brief:   op.Brief,
 		Summary: op.Summary,
 	}
-	// Re-parse OPERATION.md frontmatter with a real YAML parser so block-
-	// scalar markers (`|`, `>`) and other YAML literals never leak into the
-	// UI. Falls back to the upstream-provided value on any error.
-	if home, err := os.UserHomeDir(); err == nil {
-		opMD := filepath.Join(home, ".swat", "squads", op.Squad, "operations", op.OperationID, "OPERATION.md")
-		if data, err := os.ReadFile(opMD); err == nil {
-			if meta, _, ok := parseFrontmatter(data); ok {
-				if s := frontmatterString(meta, "summary"); s != "" {
-					v.Summary = s
-				}
-				if s := frontmatterString(meta, "brief"); s != "" {
-					v.Brief = s
+	// The upstream operation package returns Brief/Summary as raw YAML
+	// strings; if the YAML used a block-scalar (`|` / `>`) the marker can
+	// leak into the UI. Re-parse OPERATION.md with a real YAML parser only
+	// when one of the fields actually shows that pattern — this avoids an
+	// N+1 file read on every list call for the common (already-clean) case.
+	if needsFrontmatterReparse(v.Brief) || needsFrontmatterReparse(v.Summary) {
+		if dir, err := opDirForSquad(op.Squad, op.OperationID); err == nil {
+			if data, err := os.ReadFile(filepath.Join(dir, "OPERATION.md")); err == nil {
+				if meta, _, ok := parseFrontmatter(data); ok {
+					if s := frontmatterString(meta, "summary"); s != "" {
+						v.Summary = s
+					}
+					if s := frontmatterString(meta, "brief"); s != "" {
+						v.Brief = s
+					}
 				}
 			}
 		}
@@ -288,14 +291,26 @@ func handleSquads(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(listSquads())
 }
 
+// opDirForSquad returns the on-disk directory for an operation given its
+// squad. This is the single source of truth for the
+// `~/.swat/squads/<squad>/operations/<id>` convention; both opDir and
+// opToView share it so any future `swat home` refactor only needs to
+// touch one place.
+func opDirForSquad(squad, opID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".swat", "squads", squad, "operations", opID), nil
+}
+
 // opDir returns the filesystem path for a given operation ID.
 func opDir(opID string) (string, error) {
 	op, err := operation.Find(opID)
 	if err != nil {
 		return "", err
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".swat", "squads", op.Squad, "operations", opID), nil
+	return opDirForSquad(op.Squad, opID)
 }
 
 // handleOpFiles returns a JSON array of non-hidden file names in the operation directory.
