@@ -3,6 +3,10 @@
 // fetch, refresh interval, and pagination state. Refreshing one MUST NOT
 // disrupt the other (no shared cache key, no shared offset, no shared DOM
 // re-render path).
+// Canonical operation statuses are defined server-side in the swat Go module
+// (`operation.Status` in github.com/LangSensei/swat/operation). When that enum
+// changes (rename / add / remove), update both lists below so polling does not
+// silently drop ops. The backend `/api/ops?status=` accepts a comma list.
 const ACTIVE_STATUSES = 'active,queued';
 const HISTORY_STATUSES = 'completed,failed,cancelled';
 let historyOffset = 0;
