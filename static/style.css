@@ -92,8 +92,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   #detail-view { padding: 12px; }
 }
 
-/* HTML iframe */
-.html-frame { width: 100%; min-height: 500px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+/* HTML iframe — auto-sized to content height by JS so the outer #detail-view
+   scroll handles long content instead of producing a nested scrollbar. */
+.html-frame { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; display: block; }
 .open-tab-btn { display: inline-block; margin-bottom: 8px; padding: 4px 12px; background: var(--bg3); border: 1px solid var(--border); color: var(--accent); border-radius: 6px; cursor: pointer; font-size: 12px; text-decoration: none; }
 
 /* Empty state */
