@@ -1,2 +1,18 @@
+# Binary
 swat-dashboard
 swat-dashboard.exe
+*.exe
+
+# OS
+.DS_Store
+
+# Editor swap files
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/
+
+# Temp
+tmp/
