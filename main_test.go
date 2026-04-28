@@ -188,6 +188,26 @@ func TestHandleOpFile(t *testing.T) {
 	})
 }
 
+func TestHandleOpFiles(t *testing.T) {
+	t.Run("missing op returns 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+		rec := httptest.NewRecorder()
+		handleOpFiles(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for missing op param, got %d", rec.Code)
+		}
+	})
+
+	t.Run("nonexistent op returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/files?op=nonexistent-op-id", nil)
+		rec := httptest.NewRecorder()
+		handleOpFiles(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for nonexistent op, got %d", rec.Code)
+		}
+	})
+}
+
 func TestContainsCI(t *testing.T) {
 	tests := []struct {
 		s, sub string
