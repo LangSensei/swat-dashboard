@@ -126,43 +126,82 @@ async function loadOps() {
   const status = document.getElementById('filter-status').value;
   const keyword = document.getElementById('filter-keyword').value;
 
-  const params = new URLSearchParams({ limit: '20', offset: '0' });
-  if (squad) params.set('squad', squad);
-  if (status) params.set('status', status);
-  if (keyword) params.set('q', keyword);
-
-  const resp = await fetch(`/api/ops?${params}`);
-  const data = await resp.json();
-
-  totalOps = data.total;
-  currentOffset = 20;
-
-  // Split active vs history
   const activeList = document.getElementById('active-list');
   const historyList = document.getElementById('history-list');
   activeList.innerHTML = '';
   historyList.innerHTML = '';
 
-  const active = (data.operations || []).filter(op => op.status === 'active' || op.status === 'queued');
-  const rest = (data.operations || []).filter(op => op.status !== 'active' && op.status !== 'queued');
-
-  if (active.length === 0) {
-    activeList.innerHTML = '<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">No active operations</div>';
-  }
-  active.forEach(op => renderOpCard(op, activeList));
-  rest.forEach(op => renderOpCard(op, historyList));
-
-  document.getElementById('load-more').style.display = currentOffset < totalOps ? '' : 'none';
-
-  // Update stats from dedicated endpoint
   try {
-    const statsResp = await fetch('/api/stats');
-    const stats = await statsResp.json();
-    document.getElementById('stat-active').textContent = `Active: ${(stats.active || 0) + (stats.queued || 0)}`;
-    document.getElementById('stat-completed').textContent = `Completed: ${stats.completed || 0}`;
-    document.getElementById('stat-failed').textContent = `Failed: ${stats.failed || 0}`;
+    // When no status filter is set, fetch active+queued ops separately
+    // so they always appear regardless of pagination
+    let activeOps = [];
+    if (!status) {
+      const activeParams = new URLSearchParams({ limit: '50', offset: '0', status: 'active' });
+      if (squad) activeParams.set('squad', squad);
+      if (keyword) activeParams.set('q', keyword);
+
+      const queuedParams = new URLSearchParams({ limit: '50', offset: '0', status: 'queued' });
+      if (squad) queuedParams.set('squad', squad);
+      if (keyword) queuedParams.set('q', keyword);
+
+      const [activeResp, queuedResp] = await Promise.all([
+        fetch(`/api/ops?${activeParams}`),
+        fetch(`/api/ops?${queuedParams}`)
+      ]);
+      const activeData = await activeResp.json();
+      const queuedData = await queuedResp.json();
+      activeOps = [...(activeData.operations || []), ...(queuedData.operations || [])];
+    }
+
+    // Main paginated fetch for the history list (or filtered view)
+    const params = new URLSearchParams({ limit: '20', offset: '0' });
+    if (squad) params.set('squad', squad);
+    if (status) params.set('status', status);
+    if (keyword) params.set('q', keyword);
+
+    const resp = await fetch(`/api/ops?${params}`);
+    const data = await resp.json();
+
+    totalOps = data.total;
+    currentOffset = 20;
+
+    if (!status) {
+      // No status filter: active section from dedicated fetch, history from paginated fetch minus active/queued
+      if (activeOps.length === 0) {
+        activeList.innerHTML = '<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">No active operations</div>';
+      }
+      activeOps.forEach(op => renderOpCard(op, activeList));
+
+      const rest = (data.operations || []).filter(op => op.status !== 'active' && op.status !== 'queued');
+      rest.forEach(op => renderOpCard(op, historyList));
+    } else {
+      // Status filter active: show all results in the appropriate section
+      const active = (data.operations || []).filter(op => op.status === 'active' || op.status === 'queued');
+      const rest = (data.operations || []).filter(op => op.status !== 'active' && op.status !== 'queued');
+
+      if (active.length === 0) {
+        activeList.innerHTML = '<div style="padding:8px 12px;color:var(--fg2);font-size:13px;">No active operations</div>';
+      }
+      active.forEach(op => renderOpCard(op, activeList));
+      rest.forEach(op => renderOpCard(op, historyList));
+    }
+
+    document.getElementById('load-more').style.display = currentOffset < totalOps ? '' : 'none';
+
+    // Update stats from dedicated endpoint
+    try {
+      const statsResp = await fetch('/api/stats');
+      const stats = await statsResp.json();
+      document.getElementById('stat-active').textContent = `Active: ${(stats.active || 0) + (stats.queued || 0)}`;
+      document.getElementById('stat-completed').textContent = `Completed: ${stats.completed || 0}`;
+      document.getElementById('stat-failed').textContent = `Failed: ${stats.failed || 0}`;
+    } catch(e) {
+      document.getElementById('stat-active').textContent = `Active: ${activeOps.length}`;
+    }
   } catch(e) {
-    document.getElementById('stat-active').textContent = `Active: ${active.length}`;
+    document.getElementById('stat-active').textContent = 'Active: 0';
+    document.getElementById('stat-completed').textContent = 'Completed: 0';
+    document.getElementById('stat-failed').textContent = 'Failed: 0';
   }
 }
 
