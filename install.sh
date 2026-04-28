@@ -140,7 +140,7 @@ post_install() {
 # --- Cleanup ---
 
 cleanup() {
-    rm -rf "$EXTRACT_DIR"
+    rm -rf "${EXTRACT_DIR:-}"
 }
 
 # --- Main ---
@@ -150,12 +150,13 @@ main() {
     info "Installing SWAT Dashboard..."
     echo ""
 
+    trap cleanup EXIT
+
     detect_platform
     check_prereqs
     fetch_release
     install_binary
     post_install
-    cleanup
 
     echo ""
     ok "SWAT Dashboard installed successfully! 🚀"
