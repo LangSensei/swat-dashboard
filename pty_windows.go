@@ -77,19 +77,38 @@ func (p *platformPTY) Close() {
 	p.cpty.Close()
 }
 
-// Terminate force-kills the conpty-attached process tree (taskkill /T /F as a
-// defensive fallback in case ConPty.Close alone leaves orphaned children) and
-// then closes the pty handle. We bound the wait so callers can rely on
-// "Terminate returned -> process is gone (or we tried hard enough)".
+// Terminate gracefully signals the conpty-attached process tree (taskkill /T,
+// without /F, sends a WM_CLOSE-style request to console processes), waits up
+// to timeout for it to exit, and only then escalates to taskkill /T /F. This
+// mirrors the Unix SIGTERM → wait → SIGKILL pattern so callers get the same
+// "graceful first, then force" contract on both platforms. The pty handle is
+// closed last so the broadcaster's Read loop unblocks once the process is
+// gone.
 func (p *platformPTY) Terminate(timeout time.Duration) {
 	pid := p.cpty.Pid()
 	if pid != 0 {
-		// Best-effort: kill the whole tree. Errors are intentionally
+		// Step 1: graceful tree termination. Errors are intentionally
 		// swallowed because the process may already have exited.
-		_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
+		_ = exec.Command("taskkill", "/T", "/PID", strconv.Itoa(pid)).Run()
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, _ = p.cpty.Wait(ctx)
+	exited := make(chan struct{})
+	go func() {
+		_, _ = p.cpty.Wait(ctx)
+		close(exited)
+	}()
+
+	select {
+	case <-exited:
+		// Graceful exit (or already dead) within timeout.
+	case <-ctx.Done():
+		// Timed out — escalate to forceful tree kill.
+		if pid != 0 {
+			_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
+		}
+		<-exited
+	}
 	_ = p.cpty.Close()
 }
