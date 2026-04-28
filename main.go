@@ -155,6 +155,74 @@ func readOpFile(opId, filename string) (string, error) {
 	return string(data), nil
 }
 
+// stripYAMLFrontmatter removes a leading `---\n…\n---\n` YAML frontmatter block
+// from a markdown document. It mirrors the semantics of the deleted
+// static/frontmatter.js helper:
+//
+//   - The input must start with a line that is exactly `---` (optional trailing
+//     spaces/tabs, CRLF tolerant). Otherwise the input is returned unchanged.
+//   - Stripping ends at the next standalone `---` line.
+//   - If no closing `---` line is found, the input is returned unchanged so we
+//     never silently swallow a document that just happens to start with `---`.
+//   - Horizontal-rule `---` lines anywhere other than line 1 are never stripped.
+func stripYAMLFrontmatter(text string) string {
+	if !strings.HasPrefix(text, "---") {
+		return text
+	}
+	nl := strings.IndexByte(text, '\n')
+	if nl == -1 {
+		return text
+	}
+	firstLine := strings.TrimRight(text[:nl], "\r")
+	if !isFrontmatterDelimiter(firstLine) {
+		return text
+	}
+	rest := text[nl+1:]
+	// Walk `rest` looking for the next standalone `---` line.
+	search := 0
+	for search <= len(rest) {
+		idx := strings.Index(rest[search:], "---")
+		if idx == -1 {
+			return text
+		}
+		abs := search + idx
+		// Must be at the start of a line.
+		if abs != 0 && rest[abs-1] != '\n' {
+			search = abs + 1
+			continue
+		}
+		lineEnd := strings.IndexByte(rest[abs:], '\n')
+		var line string
+		var consumed int
+		if lineEnd == -1 {
+			line = rest[abs:]
+			consumed = len(rest) - abs
+		} else {
+			line = strings.TrimRight(rest[abs:abs+lineEnd], "\r")
+			consumed = lineEnd + 1
+		}
+		if isFrontmatterDelimiter(line) {
+			return rest[abs+consumed:]
+		}
+		search = abs + 1
+	}
+	return text
+}
+
+// isFrontmatterDelimiter reports whether line is `---` followed only by spaces
+// or tabs. Caller is responsible for trimming any trailing CR.
+func isFrontmatterDelimiter(line string) bool {
+	if !strings.HasPrefix(line, "---") {
+		return false
+	}
+	for i := 3; i < len(line); i++ {
+		if line[i] != ' ' && line[i] != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
 func containsCI(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
@@ -344,6 +412,9 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
+	}
+	if strings.EqualFold(filepath.Ext(file), ".md") {
+		content = stripYAMLFrontmatter(content)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(content))

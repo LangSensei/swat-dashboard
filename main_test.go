@@ -274,6 +274,73 @@ func TestHandleOpFile(t *testing.T) {
 	})
 }
 
+func TestStripYAMLFrontmatter(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "strips simple frontmatter block",
+			in:   "---\nfoo: bar\n---\n# Hello\n",
+			want: "# Hello\n",
+		},
+		{
+			name: "strips CRLF frontmatter block",
+			in:   "---\r\nfoo: bar\r\n---\r\n# Hello\r\n",
+			want: "# Hello\r\n",
+		},
+		{
+			name: "strips frontmatter with trailing whitespace on delimiters",
+			in:   "---  \nfoo: bar\n---\t\nbody",
+			want: "body",
+		},
+		{
+			name: "strips frontmatter with no trailing newline after closer",
+			in:   "---\nfoo: bar\n---",
+			want: "",
+		},
+		{
+			name: "preserves body containing horizontal rule",
+			in:   "---\nfoo: bar\n---\nintro\n\n---\n\nmore",
+			want: "intro\n\n---\n\nmore",
+		},
+		{
+			name: "no frontmatter is unchanged",
+			in:   "# Heading\n\nbody",
+			want: "# Heading\n\nbody",
+		},
+		{
+			name: "first line is hr but no closer is unchanged",
+			in:   "---\nthis looks like frontmatter but never closes\nstill open",
+			want: "---\nthis looks like frontmatter but never closes\nstill open",
+		},
+		{
+			name: "single-line dashes is unchanged",
+			in:   "---",
+			want: "---",
+		},
+		{
+			name: "first line not a delimiter is unchanged",
+			in:   "----\nfoo: bar\n----\nbody",
+			want: "----\nfoo: bar\n----\nbody",
+		},
+		{
+			name: "empty input is unchanged",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripYAMLFrontmatter(tc.in)
+			if got != tc.want {
+				t.Errorf("stripYAMLFrontmatter(%q)\n  got:  %q\n  want: %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHandleOpFiles(t *testing.T) {
 	t.Run("missing op returns 400", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
