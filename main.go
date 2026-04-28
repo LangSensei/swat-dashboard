@@ -84,13 +84,28 @@ func scanOperations(squad, status, keyword string, limit, offset int) ([]OpView,
 		return nil, 0
 	}
 
+	// status accepts a comma-separated list so the active and history lists can
+	// query disjoint buckets (e.g. "active,queued" vs "completed,failed") with a
+	// single endpoint while remaining independent.
+	var statusSet map[string]struct{}
+	if status != "" {
+		statusSet = make(map[string]struct{})
+		for _, s := range strings.Split(status, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				statusSet[s] = struct{}{}
+			}
+		}
+	}
+
 	var ops []OpView
 	for _, op := range all {
 		if squad != "" && op.Squad != squad {
 			continue
 		}
-		if status != "" && op.Status != status {
-			continue
+		if statusSet != nil {
+			if _, ok := statusSet[op.Status]; !ok {
+				continue
+			}
 		}
 		if keyword != "" && !containsCI(op.Brief, keyword) && !containsCI(op.Summary, keyword) {
 			continue
