@@ -276,6 +276,23 @@ func getOrCreateSession(runtimeName, prompt string) (*platformPTY, *Broadcaster,
 		return sess, broadcasters[runtimeName], nil
 	}
 
+	// Re-check active runtime under sessionsMu to seal the residual race
+	// window in handleSessionWS between its pre-upgrade `rt != active`
+	// check and this call: an in-flight WS upgrader that already passed
+	// the pre-check can be context-switched out long enough for
+	// handleRuntimeSwitch to flip SetActive(to); without this gate it
+	// would resume here and spawn a fresh PTY for the now-outgoing
+	// runtime, violating the single-active-runtime invariant. Safe for
+	// all three call sites: the WS upgrade rejects late races,
+	// handleRuntimeSwitch's spawnSessionFn proceeds because SetActive(to)
+	// already ran, and autoStartActiveSession proceeds for the active
+	// runtime it just selected.
+	if sessionStore != nil {
+		if active := sessionStore.ActiveRuntime(); active != "" && active != runtimeName {
+			return nil, nil, fmt.Errorf("runtime %q is not active (active=%q)", runtimeName, active)
+		}
+	}
+
 	if prompt == "" {
 		prompt = defaultPrompt
 	}
@@ -552,10 +569,12 @@ func handleRuntimeSwitch(w http.ResponseWriter, r *http.Request) {
 
 	// IMPORTANT: SetActive(to) MUST happen before the outgoing PTY teardown.
 	// handleSessionWS rejects upgrades whose runtime != active BEFORE
-	// upgrading, so flipping the active marker first guarantees that any WS
-	// connection arriving for `current` during the multi-second teardown
-	// window cannot race ahead and respawn an orphan PTY for the outgoing
-	// runtime (preserving the single-active-runtime invariant). If
+	// upgrading, and getOrCreateSession re-checks under sessionsMu, so
+	// flipping the active marker first guarantees that any WS connection
+	// arriving for `current` during the multi-second teardown window
+	// cannot race ahead and respawn an orphan PTY for the outgoing
+	// runtime (preserving the single-active-runtime invariant — both the
+	// pre-upgrade gate and the post-lock gate must agree). If
 	// SetActive fails we abort cleanly with the old PTY still intact.
 	if err := sessionStore.SetActive(to); err != nil {
 		log.Printf("handleRuntimeSwitch: persist active=%s: %v", to, err)

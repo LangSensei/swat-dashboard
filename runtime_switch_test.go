@@ -225,3 +225,64 @@ func TestHandleRuntimeSwitchSetActiveBeforeTeardown(t *testing.T) {
 		t.Fatalf("expected switch handler to return 200, got %d", code)
 	}
 }
+
+// TestGetOrCreateSessionRejectsInactiveRuntime is the regression test for
+// the residual sub-millisecond race window between handleSessionWS's
+// pre-upgrade `rt != active` check (line ~610) and its subsequent
+// getOrCreateSession call (line ~624). A WS connection that has already
+// passed the pre-check can be context-switched out long enough for
+// handleRuntimeSwitch to flip SetActive(to); without a re-check inside
+// getOrCreateSession, the late-arriving handler would resume and spawn a
+// fresh PTY for the now-outgoing runtime, producing an orphan PTY and
+// violating the single-active-runtime invariant.
+//
+// Hardening (PR #30 review id 4190463628 [suggestion]): getOrCreateSession
+// re-checks sessionStore.ActiveRuntime() under sessionsMu and returns an
+// error if the requested runtime is no longer active. This test exercises
+// that gate directly (without going through the WS handshake) so the race
+// window is closed regardless of scheduler timing.
+func TestGetOrCreateSessionRejectsInactiveRuntime(t *testing.T) {
+	setSessionStoreForTest(t, "gemini")
+
+	// Calling getOrCreateSession with a runtime that is not currently
+	// active must be rejected with a "not active" error and must NOT
+	// insert any entry into the sessions map.
+	if _, _, err := getOrCreateSession("copilot", ""); err == nil {
+		t.Fatal("expected getOrCreateSession to reject inactive runtime, got nil error")
+	} else if !strings.Contains(err.Error(), "not active") {
+		t.Fatalf("expected error to mention \"not active\", got %v", err)
+	}
+
+	sessionsMu.Lock()
+	_, leaked := sessions["copilot"]
+	_, bcLeaked := broadcasters["copilot"]
+	sessionsMu.Unlock()
+	if leaked || bcLeaked {
+		t.Fatal("inactive runtime must not be inserted into sessions/broadcasters maps (orphan-PTY guard regressed)")
+	}
+
+	// The gate must NOT block lookups for an already-spawned active
+	// runtime — handleRuntimeSwitch's spawnSessionFn and the subscribe
+	// path both rely on this. Pre-seed an active session and confirm the
+	// existing-entry fast path returns it without touching createPTYSession.
+	seedPTY := &platformPTY{}
+	seedBc := NewBroadcaster()
+	sessionsMu.Lock()
+	sessions["gemini"] = seedPTY
+	broadcasters["gemini"] = seedBc
+	sessionsMu.Unlock()
+	t.Cleanup(func() {
+		sessionsMu.Lock()
+		delete(sessions, "gemini")
+		delete(broadcasters, "gemini")
+		sessionsMu.Unlock()
+	})
+
+	sess, bc, err := getOrCreateSession("gemini", "")
+	if err != nil {
+		t.Fatalf("getOrCreateSession for active runtime returned error: %v", err)
+	}
+	if sess != seedPTY || bc != seedBc {
+		t.Fatal("expected pre-seeded active session/broadcaster to be returned unchanged")
+	}
+}
