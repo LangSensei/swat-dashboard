@@ -139,8 +139,22 @@ function teardownRuntimeState(rt) {
   if (state.ws) { state.ws.onclose = null; try { state.ws.close(); } catch(e) {} state.ws = null; }
 }
 
+let switchInFlight = false;
 async function switchRuntime(to) {
+  if (switchInFlight) return;
   if (to === currentRuntime) return;
+  switchInFlight = true;
+  // Disable BOTH runtime tab buttons during the in-flight window so a
+  // double-click cannot race the backend into an unnecessary 409. We
+  // restore visual state in finally; on the success path loadRuntimes
+  // re-renders tabs from scratch which also clears the disabled styles.
+  const tabs = document.querySelectorAll('#runtime-tabs .tab');
+  tabs.forEach(t => {
+    t.dataset.prevPointer = t.style.pointerEvents;
+    t.dataset.prevOpacity = t.style.opacity;
+    t.style.pointerEvents = 'none';
+    t.style.opacity = '0.5';
+  });
   try {
     const resp = await fetch('/api/runtime/switch?to=' + encodeURIComponent(to), { method:'POST' });
     if (resp.status === 200) {
@@ -160,6 +174,18 @@ async function switchRuntime(to) {
     }
   } catch (e) {
     toast('Switch failed: ' + e.message, 'error');
+  } finally {
+    switchInFlight = false;
+    // Restore tabs that survived the in-flight window. On success/409/400
+    // loadRuntimes re-renders tabs entirely (these resets are no-ops on the
+    // freshly-rendered DOM); on the unexpected error/catch paths this
+    // restores the original interactive state.
+    document.querySelectorAll('#runtime-tabs .tab').forEach(t => {
+      t.style.pointerEvents = t.dataset.prevPointer || '';
+      t.style.opacity = t.dataset.prevOpacity || '';
+      delete t.dataset.prevPointer;
+      delete t.dataset.prevOpacity;
+    });
   }
 }
 
