@@ -27,6 +27,21 @@ function getOrCreateTerminal(rt) {
     const s = terminals[rt];
     if (s && s.ws && s.ws.readyState === WebSocket.OPEN) s.ws.send(data);
   });
+  // Shift+Enter -> send LF (\n) instead of CR (\r) so the Copilot CLI input
+  // treats it as an in-line newline rather than submitting the message.
+  // Plain Enter keeps the default xterm behavior (sends \r -> submit).
+  // Skip while an IME composition is in progress so confirming a CJK
+  // candidate with Enter never accidentally submits or injects \n.
+  t.attachCustomKeyEventHandler(e => {
+    if (e.type !== 'keydown') return true;
+    if (e.isComposing || e.keyCode === 229) return true;
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const s = terminals[rt];
+      if (s && s.ws && s.ws.readyState === WebSocket.OPEN) s.ws.send('\n');
+      return false;
+    }
+    return true;
+  });
   terminals[rt] = { term:t, fitAddon:fa, ws:null, closeTimer:null, div };
   return terminals[rt];
 }
