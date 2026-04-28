@@ -91,6 +91,72 @@ func TestHandleOps(t *testing.T) {
 			t.Error("missing 'total' key")
 		}
 	})
+
+	t.Run("status=active filter", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/ops?status=active&limit=50", nil)
+		rec := httptest.NewRecorder()
+
+		handleOps(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode JSON: %v", err)
+		}
+
+		if _, ok := result["operations"]; !ok {
+			t.Error("missing 'operations' key")
+		}
+		if _, ok := result["total"]; !ok {
+			t.Error("missing 'total' key")
+		}
+
+		// All returned ops must be active
+		if ops, ok := result["operations"].([]interface{}); ok {
+			for i, rawOp := range ops {
+				op := rawOp.(map[string]interface{})
+				if op["status"] != "active" {
+					t.Errorf("ops[%d]: expected status 'active', got %q", i, op["status"])
+				}
+			}
+		}
+	})
+
+	t.Run("status=queued filter", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/ops?status=queued&limit=50", nil)
+		rec := httptest.NewRecorder()
+
+		handleOps(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode JSON: %v", err)
+		}
+
+		if _, ok := result["operations"]; !ok {
+			t.Error("missing 'operations' key")
+		}
+		if _, ok := result["total"]; !ok {
+			t.Error("missing 'total' key")
+		}
+
+		// All returned ops must be queued
+		if ops, ok := result["operations"].([]interface{}); ok {
+			for i, rawOp := range ops {
+				op := rawOp.(map[string]interface{})
+				if op["status"] != "queued" {
+					t.Errorf("ops[%d]: expected status 'queued', got %q", i, op["status"])
+				}
+			}
+		}
+	})
 }
 
 func TestHandleSquads(t *testing.T) {
