@@ -59,6 +59,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .op-meta { font-size: 11px; color: var(--color-fg-muted); display: flex; gap: 8px; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
 .status-dot.active, .status-dot.queued { background: var(--color-success-fg); animation: pulse 2s infinite; }
+.status-dot.classifying { background: var(--color-attention-fg); animation: pulse 2s infinite; }
 .status-dot.completed { background: var(--color-fg-muted); }
 .status-dot.failed { background: var(--color-danger-fg); }
 .status-dot.cancelled { background: var(--color-fg-muted); }
@@ -203,3 +204,64 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .empty-state .empty-hint { font-size: 13px; color: var(--color-fg-muted); font-family: var(--font-mono); background: var(--color-canvas-subtle); padding: 8px 14px; border-radius: 6px; }
 .empty-state .copy-btn { background: var(--color-canvas-subtle); border: 1px solid var(--color-border-default); color: var(--color-accent-fg); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
 .empty-state .copy-btn:hover { background: var(--color-canvas-default); }
+
+/* --- Detail Header (status-adaptive) --- */
+.detail-header { margin-bottom: 20px; }
+.detail-back { display: inline-block; font-size: 13px; color: var(--color-accent-fg); cursor: pointer; margin-bottom: 12px; text-decoration: none; }
+.detail-back:hover { text-decoration: underline; }
+.detail-header-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.detail-header-row .status-dot { width: 10px; height: 10px; }
+.detail-header-id { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+.detail-header-brief { font-size: 14px; line-height: 1.6; margin-top: 8px; }
+.detail-header-brief .md-content { display: inline; }
+.detail-header-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--color-fg-muted); flex-wrap: wrap; }
+.detail-header-meta .status-label { font-weight: 500; }
+.detail-header-meta .status-label.completed { color: var(--color-fg-muted); }
+.detail-header-meta .status-label.failed { color: var(--color-danger-fg); }
+.detail-header-meta .status-label.active, .detail-header-meta .status-label.queued { color: var(--color-success-fg); }
+.detail-header-meta .status-label.classifying { color: var(--color-attention-fg); }
+.detail-header-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+
+/* Action buttons */
+.action-btn { padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid var(--color-border-default); background: var(--color-canvas-subtle); color: var(--color-fg-default); font-family: inherit; }
+.action-btn:hover { background: var(--color-canvas-default); }
+.action-btn.danger { color: var(--color-danger-fg); border-color: var(--color-danger-fg); }
+.action-btn.danger:hover { background: rgba(248,81,73,0.1); }
+.action-btn.primary { background: var(--color-accent-fg); color: #fff; border-color: var(--color-accent-fg); }
+.action-btn.primary:hover { opacity: 0.9; }
+.action-btn.icon { padding: 4px 8px; font-size: 14px; line-height: 1; }
+.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Failure reason box */
+.failure-reason-box { background: rgba(248,81,73,0.08); border: 1px solid var(--color-danger-fg); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+.failure-reason-box .failure-header { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--color-danger-fg); margin-bottom: 4px; }
+.failure-reason-box .failure-code { font-size: 12px; font-family: var(--font-mono); color: var(--color-fg-muted); margin-bottom: 8px; }
+.failure-reason-box .failure-hint { font-size: 13px; color: var(--color-fg-muted); line-height: 1.5; }
+
+/* Status message for queued/classifying */
+.status-message { padding: 12px 16px; border-radius: 8px; background: var(--color-canvas-overlay); border: 1px solid var(--color-border-default); margin-bottom: 16px; font-size: 14px; color: var(--color-fg-muted); display: flex; align-items: center; gap: 8px; }
+.status-message .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--color-border-default); border-top-color: var(--color-accent-fg); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Primary content area */
+.primary-content { margin-bottom: 20px; }
+.primary-content .md-content { max-width: 100%; }
+
+/* File category sections */
+.file-category { margin-bottom: 12px; border: 1px solid var(--color-border-default); border-radius: 8px; overflow: hidden; }
+.file-category summary { padding: 10px 14px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--color-fg-default); background: var(--color-canvas-overlay); list-style: none; display: flex; align-items: center; gap: 8px; }
+.file-category summary::-webkit-details-marker { display: none; }
+.file-category summary::before { content: '\25B6'; font-size: 10px; color: var(--color-fg-muted); transition: transform 0.15s; }
+.file-category[open] summary::before { transform: rotate(90deg); }
+.file-category .count-badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--color-canvas-subtle); color: var(--color-fg-muted); margin-left: 4px; }
+.file-category-list { padding: 4px 0; }
+.file-category-item { padding: 6px 14px; font-size: 13px; font-family: var(--font-mono); color: var(--color-accent-fg); cursor: pointer; }
+.file-category-item:hover { background: rgba(255,255,255,0.04); }
+.file-category-item.active { background: var(--color-canvas-subtle); font-weight: 500; }
+
+/* Inline file content inside category */
+.file-inline-content { padding: 0 14px 12px; border-top: 1px solid var(--color-border-default); margin-top: 4px; }
+
+/* Config toggle link */
+.config-toggle { font-size: 12px; color: var(--color-fg-muted); cursor: pointer; padding: 8px 0; }
+.config-toggle:hover { color: var(--color-accent-fg); }

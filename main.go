@@ -571,7 +571,8 @@ func opDir(opID string) (string, error) {
 	return filepath.Join(home, ".swat", "squads", op.Squad, "operations", opID), nil
 }
 
-// handleOpFiles returns a JSON array of non-hidden file names in the operation directory.
+// handleOpFiles returns a JSON array of relative file paths in the operation directory,
+// walking subdirectories. Includes hidden files so the UI can categorize config files.
 func handleOpFiles(w http.ResponseWriter, r *http.Request) {
 	opID := r.URL.Query().Get("op")
 	if opID == "" {
@@ -583,22 +584,28 @@ func handleOpFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "not found", 404)
-		} else {
-			http.Error(w, "internal error", 500)
-		}
-		return
-	}
 	var files []string
-	for _, e := range entries {
-		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-		files = append(files, e.Name())
-	}
+		if d.IsDir() {
+			name := d.Name()
+			// Skip .git directory entirely
+			if name == ".git" || name == "repo" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return nil
+		}
+		// Normalise to forward slashes for the frontend
+		rel = filepath.ToSlash(rel)
+		files = append(files, rel)
+		return nil
+	})
 	if files == nil {
 		files = []string{}
 	}
@@ -612,18 +619,73 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing op or file", 400)
 		return
 	}
-	// Sanitize filename
-	file = filepath.Base(file)
-	content, err := readOpFile(opId, file)
+	// Sanitize: clean the path and reject traversal attempts
+	file = filepath.Clean(filepath.FromSlash(file))
+	if filepath.IsAbs(file) || strings.HasPrefix(file, "..") {
+		http.Error(w, "invalid path", 400)
+		return
+	}
+	dir, err := opDir(opId)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
 	}
+	fullPath := filepath.Join(dir, file)
+	// Verify the resolved path is still under the op directory
+	absDir, _ := filepath.Abs(dir)
+	absPath, _ := filepath.Abs(fullPath)
+	if !strings.HasPrefix(absPath, absDir+string(filepath.Separator)) && absPath != absDir {
+		http.Error(w, "invalid path", 400)
+		return
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	content := string(data)
 	if strings.EqualFold(filepath.Ext(file), ".md") {
 		content = stripYAMLFrontmatter(content)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(content))
+}
+
+
+// handleOpGet returns a single operation by ID.
+func handleOpGet(w http.ResponseWriter, r *http.Request) {
+	opID := r.URL.Query().Get("op")
+	if opID == "" {
+		http.Error(w, "missing op", 400)
+		return
+	}
+	op, err := operation.Find(opID)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(opToView(op))
+}
+
+// handleOpCancel cancels an active/queued/classifying operation.
+func handleOpCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// TODO: implement via swat_cancel MCP call
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// handleOpRetry dispatches a new operation with the same brief/details as the original.
+func handleOpRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// TODO: implement via swat_dispatch MCP call
+	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
 func handleRuntimes(w http.ResponseWriter, r *http.Request) {
@@ -853,9 +915,12 @@ func main() {
 	// API routes
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/ops", handleOps)
+	http.HandleFunc("/api/ops/get", handleOpGet)
 	http.HandleFunc("/api/squads", handleSquads)
 	http.HandleFunc("/api/files", handleOpFiles)
 	http.HandleFunc("/api/file", handleOpFile)
+	http.HandleFunc("/api/ops/cancel", handleOpCancel)
+	http.HandleFunc("/api/ops/retry", handleOpRetry)
 	http.HandleFunc("/api/runtimes", handleRuntimes)
 	http.HandleFunc("/api/runtime/switch", handleRuntimeSwitch)
 	http.HandleFunc("/ws/session", handleSessionWS)

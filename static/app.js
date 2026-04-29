@@ -225,6 +225,7 @@ function showTab(name) {
   document.getElementById('tab-detail').classList.toggle('active', name === 'detail');
   document.getElementById('terminal-container').classList.toggle('visible', name === 'session');
   document.getElementById('detail-view').classList.toggle('visible', name === 'detail');
+  if (name !== 'detail') stopDetailRefresh();
   if (name === 'session' && currentRuntime && terminals[currentRuntime]) {
     terminals[currentRuntime].fitAddon.fit();
     terminals[currentRuntime].term.focus();
@@ -805,164 +806,206 @@ async function loadSquads() {
   });
 }
 
+// --- File categorization ---
+
+const FILE_CATEGORIES = {
+  working: {
+    label: 'Working Files', icon: '\uD83D\uDCDD',
+    patterns: [/^plan\.md$/, /^progress\.md$/, /^findings\.md$/, /^OPERATION\.md$/],
+  },
+  logs: {
+    label: 'Logs', icon: '\uD83D\uDCCB',
+    patterns: [/\.log$/, /^temp\//],
+  },
+  config: {
+    label: 'Config', icon: '\u2699\uFE0F',
+    patterns: [/^AGENTS\.md$/, /^\.github\//, /^\.copilot\//, /^\.mcp\.json$/, /^\.squad\//, /^\.context_refresh_ts$/],
+  },
+};
+
+function categorizeFiles(files) {
+  const cats = { report: [], working: [], logs: [], config: [], other: [] };
+  for (const f of files) {
+    // Report files get special treatment in primary content
+    if (/^report\.(html?|md)$/i.test(f)) { cats.report.push(f); continue; }
+    let matched = false;
+    for (const [cat, def] of Object.entries(FILE_CATEGORIES)) {
+      if (def.patterns.some(p => p.test(f))) { cats[cat].push(f); matched = true; break; }
+    }
+    if (!matched) cats.other.push(f);
+  }
+  return cats;
+}
+
+// --- Cancel / Retry / Copy ID actions ---
+
+async function cancelOp(opId) {
+  if (!confirm('Cancel operation ' + opId + '?')) return;
+  stopDetailRefresh();
+  const btn = document.querySelector('.action-btn.danger');
+  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling\u2026'; }
+  try {
+    const resp = await fetch('/api/ops/cancel?op=' + encodeURIComponent(opId), { method: 'POST' });
+    if (resp.ok) {
+      toast('Cancelled: ' + opId);
+      loadActiveOps();
+      loadHistoryOps(true);
+      loadStats();
+      if (selectedOp === opId) refreshSelectedDetail();
+    } else if (resp.status === 501) {
+      toast('Cancel not yet implemented — coming soon', 'error');
+    } else {
+      toast('Cancel failed: ' + await resp.text(), 'error');
+    }
+  } catch (e) {
+    toast('Cancel failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
+  }
+}
+
+async function retryOp(opId) {
+  try {
+    const resp = await fetch('/api/ops/retry?op=' + encodeURIComponent(opId), { method: 'POST' });
+    if (resp.ok) {
+      const newOp = await resp.json();
+      toast('Retried as: ' + newOp.id);
+      loadActiveOps();
+      loadHistoryOps(true);
+      loadStats();
+    } else if (resp.status === 501) {
+      toast('Retry not yet implemented — coming soon', 'error');
+    } else {
+      toast('Retry failed: ' + await resp.text(), 'error');
+    }
+  } catch (e) {
+    toast('Retry failed: ' + e.message, 'error');
+  }
+}
+
+function copyOpId(opId) {
+  navigator.clipboard.writeText(opId).then(() => toast('Copied: ' + opId)).catch(() => {});
+}
+
+// --- Detail refresh for active/running ops ---
+
+let detailRefreshTimer = null;
+let selectedOpData = null;
+
+function startDetailRefresh(op) {
+  stopDetailRefresh();
+  if (op.status === 'active' || op.status === 'queued' || op.status === 'classifying') {
+    detailRefreshTimer = setInterval(() => refreshSelectedDetail(), 5000);
+  }
+}
+
+function stopDetailRefresh() {
+  if (detailRefreshTimer) { clearInterval(detailRefreshTimer); detailRefreshTimer = null; }
+}
+
+// Pause detail polling when the browser tab is hidden; resume when visible.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopDetailRefresh();
+  } else if (selectedOpData && document.getElementById('detail-view').classList.contains('visible')) {
+    startDetailRefresh(selectedOpData);
+  }
+});
+
+async function refreshSelectedDetail() {
+  if (!selectedOp || !selectedOpData) return;
+  try {
+    const resp = await fetch('/api/ops/get?op=' + encodeURIComponent(selectedOp));
+    if (!resp.ok) return;
+    const freshOp = await resp.json();
+    // Status changed? Full re-render
+    if (freshOp.status !== selectedOpData.status) {
+      selectOp(freshOp);
+      return;
+    }
+    selectedOpData = freshOp;
+    // Refresh primary content files for active ops
+    if (freshOp.status === 'active' || freshOp.status === 'classifying') {
+      const progressArea = document.getElementById('primary-progress-area');
+      if (progressArea) {
+        try {
+          const fResp = await fetch('/api/file?op=' + encodeURIComponent(freshOp.id) + '&file=progress.md');
+          if (fResp.ok) {
+            const text = await fResp.text();
+            progressArea.innerHTML = '<div class="md-content">' + renderMarkdown(text) + '</div>';
+            // Auto-scroll to bottom
+            progressArea.scrollTop = progressArea.scrollHeight;
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
+// --- Status-adaptive selectOp ---
+
 async function selectOp(op) {
   selectedOp = op.id;
+  selectedOpData = op;
   showTab('detail');
-
-  // Tear down any prior iframe's resize listeners before rebuilding
+  stopDetailRefresh();
   teardownActiveIframeResize();
 
   document.getElementById('detail-empty').style.display = 'none';
   const content = document.getElementById('detail-content');
   content.style.display = '';
 
-  // #6 Status surface: bucket-colored left-border on detail panel
+  // Status-colored border
   content.className = '';
   const border = cardBorderClass(op);
   if (border) content.classList.add('detail-panel', border);
 
   const dotClass = statusDotClass(op);
-  const createdRel = relativeTime(op.created_at);
-  const completedRel = op.completed_at ? relativeTime(op.completed_at) : 'running';
-
-  // #1 Markdown render brief/summary
   const briefHtml = renderMarkdown(op.brief);
-  const summaryHtml = op.summary ? renderMarkdown(op.summary) : '';
+  const statusLabel = op.status.charAt(0).toUpperCase() + op.status.slice(1);
 
-  // #2 Sidebar metadata layout (right sidebar) + main column
-  let html = '<div class="detail-layout">';
+  // --- Header ---
+  let html = '<div class="detail-header">';
+  html += '<a class="detail-back" onclick="showTab(\'session\')">\u2190 Back to list</a>';
 
-  // Main column (left)
-  html += '<div class="detail-main">';
-  html += `
-    <div class="detail-field">
-      <div class="detail-label">Brief</div>
-      <div class="detail-value"><div class="md-content">${briefHtml}</div></div>
-    </div>
-  `;
-  if (op.summary) {
-    html += `
-    <div class="detail-field">
-      <div class="detail-label">Summary</div>
-      <div class="detail-value"><div class="md-content">${summaryHtml}</div></div>
-    </div>
-    `;
+  // Row 1: status dot + ID + squad
+  html += '<div class="detail-header-row">';
+  html += '<span class="status-dot ' + dotClass + '"></span>';
+  html += '<span class="detail-header-id">' + escapeHtml(op.id) + '</span>';
+  if (op.squad) {
+    html += '<span class="squad-chip" style="background:' + squadColor(op.squad) + '">' + escapeHtml(op.squad) + '</span>';
   }
+  html += '</div>';
 
-  // Failure block: structured display when op has a failure_reason
-  if (op.status === 'failed' && op.failure_reason && typeof FAILURE_REASONS !== 'undefined') {
-    const fr = FAILURE_REASONS[op.failure_reason];
-    if (fr) {
-      let actionsHtml = '';
-      if (fr.action) {
-        if (fr.action.file) {
-          actionsHtml = `<button class="failure-action-btn" onclick="loadFileContent('${escapeHtml(op.id)}','${escapeHtml(fr.action.file)}',document.querySelector('.file-tabs'))">${escapeHtml(fr.action.label)}</button>`;
-        } else if (fr.action.href) {
-          actionsHtml = `<a class="failure-action-btn" href="${escapeHtml(fr.action.href)}">${escapeHtml(fr.action.label)}</a>`;
-        } else {
-          actionsHtml = `<span class="failure-action-btn">${escapeHtml(fr.action.label)}</span>`;
-        }
-      }
-      html += `
-    <div class="detail-field">
-      <div class="detail-label">Failure</div>
-      <div class="failure-block">
-        <div class="failure-header"><span>${fr.icon}</span> ${escapeHtml(fr.label)}</div>
-        <div class="failure-code">${escapeHtml(op.failure_reason)}</div>
-        <div class="failure-hint">${escapeHtml(fr.hint)}</div>
-        ${actionsHtml ? `<div class="failure-actions">${actionsHtml}</div>` : ''}
-      </div>
-    </div>
-      `;
-    }
-  } else if (op.status === 'failed' && op.failure_reason) {
-    html += `
-    <div class="detail-field">
-      <div class="detail-label">Failure Reason</div>
-      <div class="detail-value">${escapeHtml(op.failure_reason)}</div>
-    </div>
-    `;
+  // Brief
+  html += '<div class="detail-header-brief"><div class="md-content">' + briefHtml + '</div></div>';
+
+  // Meta row: status + duration + time + actions
+  html += '<div class="detail-header-meta">';
+  html += '<span class="status-label ' + escapeHtml(op.status) + '">' + escapeHtml(statusLabel) + '</span>';
+  if (op.elapsed) html += '<span>\u00B7 ' + escapeHtml(op.elapsed) + '</span>';
+  if (op.created_at) html += '<span>\u00B7 ' + escapeHtml(relativeTime(op.created_at)) + '</span>';
+
+  // Action buttons (right-aligned)
+  html += '<span class="detail-header-actions">';
+  if (op.status === 'active' || op.status === 'queued' || op.status === 'classifying') {
+    html += '<button class="action-btn danger" onclick="cancelOp(\'' + escapeHtml(op.id) + '\')">Cancel</button>';
   }
-
-  // #3 References folding
-  if (op.references && op.references.length > 0) {
-    let refsInner = '';
-    op.references.forEach(ref => {
-      const val = escapeHtml(ref.value);
-      if (ref.type === 'operation') {
-        const opId = escapeHtml(extractOpId(ref.value));
-        refsInner += `<li><a href="#" class="ref-link" data-op-id="${opId}">${opId}</a></li>`;
-      } else {
-        refsInner += `<li><span class="ref-type">${escapeHtml(ref.type)}</span>: ${val}</li>`;
-      }
-    });
-    html += `
-    <details class="detail-references">
-      <summary>References (${op.references.length})</summary>
-      <ul>${refsInner}</ul>
-    </details>
-    `;
+  if (op.status === 'failed') {
+    html += '<button class="action-btn primary" onclick="retryOp(\'' + escapeHtml(op.id) + '\')">Retry</button>';
   }
+  html += '<button class="action-btn icon" onclick="copyOpId(\'' + escapeHtml(op.id) + '\')" title="Copy ID">\uD83D\uDCCB</button>';
+  html += '</span>';
+  html += '</div>'; // end meta row
+  html += '</div>'; // end header
 
-  html += '</div>'; // end detail-main
+  // --- Primary content area (status-dependent) ---
+  html += '<div class="primary-content" id="primary-content-area">Loading...</div>';
 
-  // Sidebar (right)
-  html += '<div class="detail-sidebar">';
-  html += `
-    <div class="sidebar-field">
-      <div class="sidebar-label">Operation</div>
-      <div class="sidebar-value mono">${escapeHtml(op.id)}</div>
-    </div>
-    <div class="sidebar-field">
-      <div class="sidebar-label">Squad</div>
-      <div class="sidebar-value"><span class="squad-chip" style="background:${squadColor(op.squad || '')}">${escapeHtml(op.squad || '\u2014')}</span></div>
-    </div>
-    <div class="sidebar-field">
-      <div class="sidebar-label">Status</div>
-      <div class="sidebar-value"><span class="status-dot ${dotClass}"></span>${escapeHtml(op.status)}</div>
-    </div>
-    <div class="sidebar-field">
-      <div class="sidebar-label">Duration</div>
-      <div class="sidebar-value">${escapeHtml(op.elapsed || '\u2014')}</div>
-    </div>
-    <div class="sidebar-field">
-      <div class="sidebar-label">Created</div>
-      <div class="sidebar-value" title="${escapeHtml(op.created_at || '')}">${escapeHtml(createdRel || '?')}</div>
-    </div>
-    <div class="sidebar-field">
-      <div class="sidebar-label">Completed</div>
-      <div class="sidebar-value" title="${escapeHtml(op.completed_at || '')}">${escapeHtml(completedRel)}</div>
-    </div>
-  `;
-  html += '</div>'; // end detail-sidebar
-  html += '</div>'; // end detail-layout
+  // --- File categories placeholder ---
+  html += '<div id="file-categories-area"></div>';
 
-  // File tabs and content (full width, outside the 2-column grid)
-  html += `
-    <div id="file-tabs-container"></div>
-    <div class="detail-field">
-      <div id="file-content-label" class="detail-label">OPERATION.md</div>
-      <div class="detail-value"><div id="file-content-area"><pre>Loading...</pre></div></div>
-    </div>
-  `;
   content.innerHTML = html;
-
-  // Bind reference link click handlers (event delegation)
-  content.querySelectorAll('.ref-link').forEach(link => {
-    link.addEventListener('click', async (e) => {
-      e.preventDefault();
-      const refId = link.dataset.opId;
-      try {
-        const resp = await fetch('/api/ops?q=' + encodeURIComponent(refId) + '&limit=100');
-        const data = await resp.json();
-        const refOp = (data.operations || []).find(o => o.id === refId);
-        if (refOp) selectOp(refOp);
-        else toast('Referenced operation not found: ' + refId);
-      } catch (err) {
-        toast('Failed to load reference: ' + err.message, 'error');
-      }
-    });
-  });
 
   // Stale-request guard
   if (selectedOp !== op.id) return;
@@ -970,39 +1013,27 @@ async function selectOp(op) {
   // Fetch file list
   let files = [];
   try {
-    const filesResp = await fetch(`/api/files?op=${encodeURIComponent(op.id)}`);
+    const filesResp = await fetch('/api/files?op=' + encodeURIComponent(op.id));
     if (selectedOp !== op.id) return;
     if (filesResp.ok) files = (await filesResp.json()) || [];
-  } catch(e) {}
-
-  // Stale-request guard after files fetch
+  } catch (e) {}
   if (selectedOp !== op.id) return;
 
-  // Render file tabs
-  const tabsContainer = document.getElementById('file-tabs-container');
-  const labelEl = document.getElementById('file-content-label');
-  if (files.length > 0) {
-    const tabsDiv = document.createElement('div');
-    tabsDiv.className = 'file-tabs';
-    files.forEach(f => {
-      const tab = document.createElement('span');
-      tab.className = 'file-tab';
-      tab.textContent = f;
-      tab.onclick = () => loadFileContent(op.id, f, tabsDiv);
-      tabsDiv.appendChild(tab);
-    });
-    tabsContainer.appendChild(tabsDiv);
-    if (labelEl) labelEl.style.display = 'none';
-  }
+  const cats = categorizeFiles(files);
 
-  // Default to OPERATION.md if present, otherwise first file
-  if (files.length > 0) {
-    const defaultFile = files.includes('OPERATION.md') ? 'OPERATION.md' : files[0];
-    loadFileContent(op.id, defaultFile, tabsContainer.querySelector('.file-tabs'));
-  } else {
-    document.getElementById('file-content-label').textContent = '';
-    document.getElementById('file-content-area').textContent = 'No files available';
-  }
+  // Render status-specific primary content
+  const primaryArea = document.getElementById('primary-content-area');
+  if (!primaryArea || selectedOp !== op.id) return;
+
+  await renderPrimaryContent(op, cats, files, primaryArea);
+  if (selectedOp !== op.id) return;
+
+  // Render file categories below primary content
+  const categoriesArea = document.getElementById('file-categories-area');
+  if (categoriesArea) renderFileCategories(op, cats, categoriesArea);
+
+  // Start auto-refresh for active ops
+  startDetailRefresh(op);
 
   // Highlight selected card
   document.querySelectorAll('.op-card').forEach(c => c.classList.remove('selected'));
@@ -1011,48 +1042,314 @@ async function selectOp(op) {
   });
 }
 
-async function loadFileContent(opId, filename, tabsDiv) {
-  if (selectedOp !== opId) return;
-  // Tear down any prior iframe's resize listeners before replacing content.
-  teardownActiveIframeResize();
-  // Update active tab
-  if (tabsDiv) {
-    tabsDiv.querySelectorAll('.file-tab').forEach(t => {
-      t.classList.toggle('active', t.textContent === filename);
-    });
+async function renderPrimaryContent(op, cats, files, container) {
+  switch (op.status) {
+    case 'completed':
+      await renderCompletedContent(op, cats, files, container);
+      break;
+    case 'failed':
+      await renderFailedContent(op, cats, files, container);
+      break;
+    case 'active':
+      await renderActiveContent(op, cats, files, container);
+      break;
+    case 'queued':
+    case 'classifying':
+      await renderQueuedContent(op, cats, files, container);
+      break;
+    default:
+      container.innerHTML = '<div class="md-content">' + renderMarkdown(op.summary || op.brief || '\u2014') + '</div>';
   }
-  document.getElementById('file-content-label').textContent = filename;
+}
 
-  const contentArea = document.getElementById('file-content-area');
-  contentArea.innerHTML = '<pre>Loading...</pre>';
+async function renderCompletedContent(op, cats, files, container) {
+  // 1. report.html → iframe
+  const reportHtml = cats.report.find(f => /\.html?$/i.test(f));
+  if (reportHtml) {
+    try {
+      const resp = await fetch('/api/file?op=' + encodeURIComponent(op.id) + '&file=' + encodeURIComponent(reportHtml));
+      if (selectedOp !== op.id) return;
+      if (resp.ok) {
+        const text = await resp.text();
+        const fileUrl = '/api/file?op=' + encodeURIComponent(op.id) + '&file=' + encodeURIComponent(reportHtml);
+        container.innerHTML = '<a href="' + escapeHtml(fileUrl) + '" target="_blank" class="open-tab-btn">Open in new tab \u2197</a>';
+        const iframe = document.createElement('iframe');
+        iframe.className = 'html-frame';
+        iframe.setAttribute('sandbox', 'allow-same-origin');
+        iframe.srcdoc = text;
+        attachIframeAutoResize(iframe);
+        container.appendChild(iframe);
+        return;
+      }
+    } catch (e) {}
+  }
 
+  // 2. report.md → markdown
+  const reportMd = cats.report.find(f => /\.md$/i.test(f));
+  if (reportMd) {
+    try {
+      const resp = await fetch('/api/file?op=' + encodeURIComponent(op.id) + '&file=' + encodeURIComponent(reportMd));
+      if (selectedOp !== op.id) return;
+      if (resp.ok) {
+        const text = await resp.text();
+        container.innerHTML = '<div class="md-content">' + renderMarkdown(text) + '</div>';
+        return;
+      }
+    } catch (e) {}
+  }
+
+  // 3. OPERATION.md summary
+  if (op.summary) {
+    container.innerHTML = '<div class="detail-field"><div class="detail-label">Summary</div><div class="detail-value"><div class="md-content">' + renderMarkdown(op.summary) + '</div></div></div>';
+  } else {
+    // 4. Show OPERATION.md content
+    await renderFileInline(op.id, 'OPERATION.md', container);
+  }
+}
+
+async function renderFailedContent(op, cats, files, container) {
+  let html = '';
+
+  // 1. Failure reason box at top
+  if (op.failure_reason && typeof FAILURE_REASONS !== 'undefined') {
+    const fr = FAILURE_REASONS[op.failure_reason];
+    if (fr) {
+      html += '<div class="failure-reason-box">';
+      html += '<div class="failure-header"><span>' + fr.icon + '</span> ' + escapeHtml(fr.label) + '</div>';
+      html += '<div class="failure-code">' + escapeHtml(op.failure_reason) + '</div>';
+      html += '<div class="failure-hint">' + escapeHtml(fr.hint) + '</div>';
+      html += '</div>';
+    } else {
+      html += '<div class="failure-reason-box">';
+      html += '<div class="failure-header">\u274C Failure</div>';
+      html += '<div class="failure-code">' + escapeHtml(op.failure_reason) + '</div>';
+      html += '</div>';
+    }
+  } else if (op.failure_reason) {
+    html += '<div class="failure-reason-box">';
+    html += '<div class="failure-header">\u274C Failure</div>';
+    html += '<div class="failure-code">' + escapeHtml(op.failure_reason) + '</div>';
+    html += '</div>';
+  }
+
+  // 2. progress.md expanded
+  html += '<div id="failed-progress-area"><pre>Loading progress.md...</pre></div>';
+
+  // 3. Last log file expanded
+  const logFiles = cats.logs.filter(f => f.endsWith('.log'));
+  if (logFiles.length > 0) {
+    html += '<div id="failed-log-area"><pre>Loading log...</pre></div>';
+  }
+
+  container.innerHTML = html;
+  if (selectedOp !== op.id) return;
+
+  // Load progress.md
+  const progressArea = document.getElementById('failed-progress-area');
+  if (progressArea && files.includes('progress.md')) {
+    await renderFileInline(op.id, 'progress.md', progressArea);
+  } else if (progressArea) {
+    progressArea.innerHTML = '<div style="color:var(--color-fg-muted);font-size:13px;">No progress.md found</div>';
+  }
+
+  // Load last log
+  if (logFiles.length > 0) {
+    const logArea = document.getElementById('failed-log-area');
+    if (logArea) {
+      const lastLog = logFiles[logFiles.length - 1];
+      await renderFileInline(op.id, lastLog, logArea, lastLog);
+    }
+  }
+}
+
+async function renderActiveContent(op, cats, files, container) {
+  let html = '';
+
+  // 1. progress.md auto-refreshing
+  html += '<div class="detail-field">';
+  html += '<div class="detail-label">Progress <span style="color:var(--color-success-fg);font-size:10px;">\u25CF live</span></div>';
+  html += '<div class="detail-value" id="primary-progress-area" style="max-height:400px;overflow-y:auto;"><pre>Loading progress.md...</pre></div>';
+  html += '</div>';
+
+  // 2. plan.md
+  html += '<div class="detail-field">';
+  html += '<div class="detail-label">Plan</div>';
+  html += '<div class="detail-value" id="primary-plan-area"><pre>Loading plan.md...</pre></div>';
+  html += '</div>';
+
+  container.innerHTML = html;
+  if (selectedOp !== op.id) return;
+
+  // Load progress.md
+  const progressArea = document.getElementById('primary-progress-area');
+  if (progressArea && files.includes('progress.md')) {
+    await renderFileInline(op.id, 'progress.md', progressArea);
+  } else if (progressArea) {
+    progressArea.innerHTML = '<div style="color:var(--color-fg-muted);font-size:13px;">No progress.md yet</div>';
+  }
+
+  // Load plan.md
+  const planArea = document.getElementById('primary-plan-area');
+  if (planArea && files.includes('plan.md')) {
+    await renderFileInline(op.id, 'plan.md', planArea);
+  } else if (planArea) {
+    planArea.innerHTML = '<div style="color:var(--color-fg-muted);font-size:13px;">No plan.md yet</div>';
+  }
+}
+
+async function renderQueuedContent(op, cats, files, container) {
+  let html = '';
+
+  // Status message
+  const msg = op.status === 'classifying' ? 'Waiting for classification...' : 'In queue...';
+  html += '<div class="status-message"><span class="spinner"></span>' + escapeHtml(msg) + '</div>';
+
+  // OPERATION.md content
+  html += '<div id="queued-operation-area"><pre>Loading OPERATION.md...</pre></div>';
+
+  container.innerHTML = html;
+  if (selectedOp !== op.id) return;
+
+  const opArea = document.getElementById('queued-operation-area');
+  if (opArea) {
+    await renderFileInline(op.id, 'OPERATION.md', opArea);
+  }
+}
+
+// Helper: render a file's content inline into a container
+async function renderFileInline(opId, filename, container, label) {
   try {
-    const resp = await fetch(`/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`);
+    const resp = await fetch('/api/file?op=' + encodeURIComponent(opId) + '&file=' + encodeURIComponent(filename));
     if (selectedOp !== opId) return;
-    const text = resp.ok ? await resp.text() : 'Failed to load';
-
+    if (!resp.ok) {
+      container.innerHTML = '<pre>Failed to load ' + escapeHtml(filename) + '</pre>';
+      return;
+    }
+    const text = await resp.text();
     const ext = filename.split('.').pop().toLowerCase();
-
+    if (label) {
+      container.innerHTML = '<div class="detail-label">' + escapeHtml(label) + '</div>';
+    } else {
+      container.innerHTML = '';
+    }
     if (ext === 'md' && typeof marked !== 'undefined') {
-      const sanitized = renderMarkdown(text);
-      contentArea.innerHTML = `<div class="md-content">${sanitized}</div>`;
+      container.innerHTML += '<div class="md-content">' + renderMarkdown(text) + '</div>';
     } else if (ext === 'html' || ext === 'htm') {
-      const fileUrl = `/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`;
-      contentArea.innerHTML =
-        `<a href="${escapeHtml(fileUrl)}" target="_blank" class="open-tab-btn">Open in new tab &#8599;</a>`;
+      const fileUrl = '/api/file?op=' + encodeURIComponent(opId) + '&file=' + encodeURIComponent(filename);
+      container.innerHTML += '<a href="' + escapeHtml(fileUrl) + '" target="_blank" class="open-tab-btn">Open in new tab \u2197</a>';
       const iframe = document.createElement('iframe');
       iframe.className = 'html-frame';
       iframe.setAttribute('sandbox', 'allow-same-origin');
       iframe.srcdoc = text;
       attachIframeAutoResize(iframe);
-      contentArea.appendChild(iframe);
+      container.appendChild(iframe);
     } else {
-      contentArea.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
+      container.innerHTML += '<pre style="background:var(--color-canvas-overlay);padding:12px;border-radius:8px;font-size:13px;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);">' + escapeHtml(text) + '</pre>';
     }
-  } catch(e) {
-    if (selectedOp !== opId) return;
-    contentArea.innerHTML = '<pre>Failed to load</pre>';
+  } catch (e) {
+    container.innerHTML = '<pre>Failed to load ' + escapeHtml(filename) + '</pre>';
   }
+}
+
+// --- File category rendering ---
+
+function renderFileCategories(op, cats, container) {
+  let html = '';
+
+  // Working files (expanded by default for completed/active, skip files already shown in primary)
+  const primaryShown = getPrimaryShownFiles(op);
+  const workingFiles = cats.working.filter(f => !primaryShown.has(f));
+  if (workingFiles.length > 0) {
+    html += renderCategorySection('working', FILE_CATEGORIES.working, workingFiles, op.id, true);
+  }
+
+  // Logs (collapsed by default)
+  if (cats.logs.length > 0) {
+    html += renderCategorySection('logs', FILE_CATEGORIES.logs, cats.logs, op.id, false);
+  }
+
+  // Config (hidden by default — shown via toggle)
+  if (cats.config.length > 0) {
+    html += '<div id="config-toggle-area">';
+    html += '<div class="config-toggle" onclick="document.getElementById(\'config-section\').style.display=\'block\';this.style.display=\'none\';">';
+    html += 'Show config files (' + cats.config.length + ')</div>';
+    html += '<div id="config-section" style="display:none">';
+    html += renderCategorySection('config', FILE_CATEGORIES.config, cats.config, op.id, false);
+    html += '</div></div>';
+  }
+
+  // Other uncategorized files
+  const otherFiles = (cats.other || []).filter(f => !primaryShown.has(f));
+  if (otherFiles.length > 0) {
+    html += renderCategorySection('other', { label: 'Other', icon: '\uD83D\uDCC1' }, otherFiles, op.id, false);
+  }
+
+  container.innerHTML = html;
+
+  // Event delegation for file category items (avoids inline onclick with quote issues)
+  container.addEventListener('click', function(e) {
+    const item = e.target.closest('.file-category-item');
+    if (!item) return;
+    const file = item.getAttribute('data-file');
+    const opId = item.getAttribute('data-op');
+    if (file && opId) toggleFileInCategory(item, opId, file);
+  });
+}
+
+function getPrimaryShownFiles(op) {
+  const shown = new Set();
+  if (op.status === 'completed') {
+    // Report files shown in primary
+    shown.add('report.html');
+    shown.add('report.md');
+  }
+  if (op.status === 'failed') {
+    shown.add('progress.md');
+  }
+  if (op.status === 'active') {
+    shown.add('progress.md');
+    shown.add('plan.md');
+  }
+  if (op.status === 'queued' || op.status === 'classifying') {
+    shown.add('OPERATION.md');
+  }
+  return shown;
+}
+
+function renderCategorySection(id, def, files, opId, openByDefault) {
+  let html = '<details class="file-category"' + (openByDefault ? ' open' : '') + '>';
+  html += '<summary>' + def.icon + ' ' + escapeHtml(def.label);
+  html += '<span class="count-badge">' + files.length + '</span>';
+  html += '</summary>';
+  html += '<div class="file-category-list">';
+  for (const f of files) {
+    const safeF = escapeHtml(f);
+    html += '<div class="file-category-item" data-file="' + safeF + '" data-op="' + escapeHtml(opId) + '">' + safeF + '</div>';
+  }
+  html += '</div></details>';
+  return html;
+}
+
+async function toggleFileInCategory(el, opId, filename) {
+  // If already expanded, collapse
+  const existing = el.nextElementSibling;
+  if (existing && existing.classList.contains('file-inline-content')) {
+    existing.remove();
+    el.classList.remove('active');
+    return;
+  }
+  // Collapse any other expanded file in this category
+  const parent = el.closest('.file-category-list');
+  if (parent) {
+    parent.querySelectorAll('.file-inline-content').forEach(e => e.remove());
+    parent.querySelectorAll('.file-category-item').forEach(e => e.classList.remove('active'));
+  }
+  el.classList.add('active');
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'file-inline-content';
+  contentDiv.innerHTML = '<pre>Loading...</pre>';
+  el.after(contentDiv);
+  await renderFileInline(opId, filename, contentDiv, filename);
 }
 
 function escapeHtml(str) {
