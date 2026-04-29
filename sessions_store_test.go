@@ -113,13 +113,12 @@ func TestSessionStoreInvalidUUID(t *testing.T) {
 	t.Setenv("SWAT_DASHBOARD_HOME", dir)
 	path := filepath.Join(dir, "sessions.json")
 
-	good := "550e8400-e29b-41d4-a716-446655440000"
 	seed := map[string]any{
 		"active": "copilot",
 		"sessions": map[string]string{
 			"copilot": "not-a-uuid",
-			"gemini":  good,
 		},
+		"version": storeVersion, // Current version — no migration.
 	}
 	data, _ := json.MarshalIndent(seed, "", "  ")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -137,9 +136,67 @@ func TestSessionStoreInvalidUUID(t *testing.T) {
 	if !isValidUUIDv4(g) {
 		t.Fatalf("regenerated id %q is not a valid UUIDv4", g)
 	}
-	// Gemini's valid id must be preserved.
-	if got := s.GUIDFor("gemini"); got != good {
-		t.Fatalf("expected gemini guid preserved, got %q", got)
+}
+
+func TestSessionStoreMigrationClearsGemini(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SWAT_DASHBOARD_HOME", dir)
+	path := filepath.Join(dir, "sessions.json")
+
+	// Seed a v0 store (no version field) with a bogus gemini UUID —
+	// simulates pre-Option D auto-generated IDs.
+	seed := map[string]any{
+		"active": "copilot",
+		"sessions": map[string]string{
+			"copilot": "550e8400-e29b-41d4-a716-446655440000",
+			"gemini":  "660e8400-e29b-41d4-a716-446655440000",
+		},
+	}
+	data, _ := json.MarshalIndent(seed, "", "  ")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s, err := LoadOrInitStore()
+	if err != nil {
+		t.Fatalf("LoadOrInitStore: %v", err)
+	}
+	// Gemini session must be cleared by v0→v2 migration.
+	if got := s.GetGUID("gemini"); got != "" {
+		t.Fatalf("expected gemini session cleared by migration, got %q", got)
+	}
+	// Copilot session must be preserved.
+	if got := s.GetGUID("copilot"); got != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected copilot session preserved, got %q", got)
+	}
+	// Version must be updated.
+	if s.Version != storeVersion {
+		t.Fatalf("expected version %d, got %d", storeVersion, s.Version)
+	}
+}
+
+func TestSessionStoreGetSetClearGUID(t *testing.T) {
+	s, _ := newStoreInTemp(t)
+
+	// GetGUID returns empty for unset runtime.
+	if got := s.GetGUID("gemini"); got != "" {
+		t.Fatalf("expected empty GetGUID for unset runtime, got %q", got)
+	}
+
+	// SetGUID stores a value retrievable by GetGUID.
+	if err := s.SetGUID("gemini", "seed-session-123"); err != nil {
+		t.Fatalf("SetGUID: %v", err)
+	}
+	if got := s.GetGUID("gemini"); got != "seed-session-123" {
+		t.Fatalf("expected seed-session-123, got %q", got)
+	}
+
+	// ClearGUID removes it.
+	if err := s.ClearGUID("gemini"); err != nil {
+		t.Fatalf("ClearGUID: %v", err)
+	}
+	if got := s.GetGUID("gemini"); got != "" {
+		t.Fatalf("expected empty after ClearGUID, got %q", got)
 	}
 }
 

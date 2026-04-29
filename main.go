@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -368,6 +370,66 @@ func autoStartActiveSession() {
 	log.Printf("autoStartActiveSession: started %s session", pick)
 }
 
+// seedGeminiSessionTimeout is the maximum time to wait for the gemini CLI
+// to emit an init event during session seeding.
+const seedGeminiSessionTimeout = 30 * time.Second
+
+// swatDir is the working directory used for CLI subprocesses (gemini, copilot).
+// Tests override this to avoid depending on ~/.swat existing.
+var swatDir = filepath.Join(homeDir(), ".swat")
+
+// geminiSeedCommand builds the exec.Cmd for the gemini seed subprocess.
+// Tests override this to avoid requiring a real gemini binary.
+var geminiSeedCommand = func(ctx context.Context, prompt string) *exec.Cmd {
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--skip-trust"}
+	return exec.CommandContext(ctx, "gemini", args...)
+}
+
+// seedGeminiSession runs gemini non-interactively with stream-json output to
+// create a new session and extract the session_id from the init event.
+func seedGeminiSession(prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), seedGeminiSessionTimeout)
+	defer cancel()
+
+	cmd := geminiSeedCommand(ctx, prompt)
+	cmd.Dir = swatDir
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start gemini seed: %w", err)
+	}
+
+	// Read stdout line by line looking for the init event.
+	scanner := bufio.NewScanner(stdout)
+	var sessionID string
+	for scanner.Scan() {
+		line := scanner.Text()
+		var evt struct {
+			Type      string `json:"type"`
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(line), &evt) == nil && evt.Type == "init" && evt.SessionID != "" {
+			sessionID = evt.SessionID
+			break
+		}
+	}
+
+	// We have the session ID (or not). Wait for the process to finish.
+	// Ignore exit errors — the seed process may be killed by context cancellation.
+	_ = cmd.Wait()
+
+	if sessionID == "" {
+		return "", fmt.Errorf("no init event with session_id received from gemini")
+	}
+	return sessionID, nil
+}
+
+// seedGeminiSessionFn is a test hook for seedGeminiSession.
+var seedGeminiSessionFn = seedGeminiSession
+
 func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	var cmdName string
 	switch runtimeName {
@@ -389,22 +451,56 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	// history; `-i` injects the operator-level system prompt). Issue #29
 	// confirms this orthogonality.
 	var args []string
-	if sessionStore != nil {
-		guid := sessionStore.GUIDFor(runtimeName)
+	if cmdName == "gemini" {
+		// Gemini does not support create-on-miss: --resume only works with
+		// existing sessions. Use GetGUID (no auto-generation) and seed a new
+		// session via stream-json if needed (Option D, issue #32).
+		guid := ""
+		if sessionStore != nil {
+			guid = sessionStore.GetGUID("gemini")
+		}
+		if guid == "" {
+			// Cold start: seed a new session via gemini CLI structured output.
+			if prompt == "" {
+				prompt = defaultPrompt
+			}
+			seedID, err := seedGeminiSessionFn(prompt)
+			if err != nil {
+				log.Printf("gemini seed failed: %v; launching without --resume (no persistence)", err)
+			} else {
+				guid = seedID
+				if sessionStore != nil {
+					if err := sessionStore.SetGUID("gemini", seedID); err != nil {
+						log.Printf("gemini seed: failed to persist session ID: %v", err)
+					}
+				}
+			}
+		}
 		if guid != "" {
 			args = append(args, "--resume", guid)
 		}
-	}
-	if prompt != "" {
-		args = append(args, "-i", prompt)
-	}
-	if cmdName == "gemini" {
+		// On warm start (or after successful seed), skip -i: the session
+		// already has the prompt from the seed call or previous run.
+		// On fallback (no guid), inject the prompt so gemini starts fresh.
+		if guid == "" && prompt != "" {
+			args = append(args, "-i", prompt)
+		}
 		args = append(args, "--skip-trust", "--approval-mode", "yolo")
 	} else {
+		// Copilot: existing behavior — GUIDFor auto-generates on first use.
+		if sessionStore != nil {
+			guid := sessionStore.GUIDFor(runtimeName)
+			if guid != "" {
+				args = append(args, "--resume", guid)
+			}
+		}
+		if prompt != "" {
+			args = append(args, "-i", prompt)
+		}
 		args = append(args, "--yolo")
 	}
 	cmd := exec.Command(cmdName, args...)
-	cmd.Dir = filepath.Join(homeDir(), ".swat")
+	cmd.Dir = swatDir
 	return startPTY(cmd)
 }
 
@@ -546,9 +642,7 @@ func handleRuntimes(w http.ResponseWriter, r *http.Request) {
 			"available": err == nil,
 			"active":    rt.name == active,
 		}
-		if sessionStore != nil {
-			entry["session_id"] = sessionStore.GUIDFor(rt.name)
-		}
+		entry["session_id"] = sessionIDFor(rt.name)
 		runtimes = append(runtimes, entry)
 	}
 	json.NewEncoder(w).Encode(runtimes)
@@ -586,7 +680,7 @@ func handleRuntimeSwitch(w http.ResponseWriter, r *http.Request) {
 		_, exists := sessions[to]
 		sessionsMu.Unlock()
 		if exists {
-			writeSwitchResponse(w, to, sessionStore.GUIDFor(to))
+			writeSwitchResponse(w, to, sessionIDFor(to))
 			return
 		}
 	}
@@ -634,7 +728,19 @@ func handleRuntimeSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to spawn %s: %v", to, err), http.StatusInternalServerError)
 		return
 	}
-	writeSwitchResponse(w, to, sessionStore.GUIDFor(to))
+	writeSwitchResponse(w, to, sessionIDFor(to))
+}
+
+// sessionIDFor returns the stored session ID for runtime. For gemini it uses
+// GetGUID (no auto-generation); for copilot it uses GUIDFor (create-on-miss).
+func sessionIDFor(runtime string) string {
+	if sessionStore == nil {
+		return ""
+	}
+	if runtime == "gemini" {
+		return sessionStore.GetGUID(runtime)
+	}
+	return sessionStore.GUIDFor(runtime)
 }
 
 func writeSwitchResponse(w http.ResponseWriter, runtime, sessionID string) {
