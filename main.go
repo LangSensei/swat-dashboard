@@ -38,14 +38,15 @@ var upgrader = websocket.Upgrader{
 
 // OpView is a lightweight UI view of an operation
 type OpView struct {
-	ID          string `json:"id"`
-	Squad       string `json:"squad"`
-	Status      string `json:"status"`
-	Brief       string `json:"brief"`
-	Summary     string `json:"summary"`
-	CreatedAt   string `json:"created_at"`
-	CompletedAt string `json:"completed_at,omitempty"`
-	Elapsed     string `json:"elapsed,omitempty"`
+	ID            string `json:"id"`
+	Squad         string `json:"squad"`
+	Status        string `json:"status"`
+	Brief         string `json:"brief"`
+	Summary       string `json:"summary"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	CompletedAt   string `json:"completed_at,omitempty"`
+	Elapsed       string `json:"elapsed,omitempty"`
 }
 
 func opToView(op *operation.Operation) OpView {
@@ -55,6 +56,9 @@ func opToView(op *operation.Operation) OpView {
 		Status:  op.Status,
 		Brief:   op.Brief,
 		Summary: op.Summary,
+	}
+	if op.FailureReason != nil {
+		v.FailureReason = *op.FailureReason
 	}
 	if !op.CreatedAt.IsZero() {
 		v.CreatedAt = op.CreatedAt.Format(time.RFC3339)
@@ -401,12 +405,27 @@ func homeDir() string {
 
 // --- HTTP Handlers ---
 
-// handleStats returns operation counts by status.
+// handleStats returns operation counts by status and failure_reason buckets.
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	all, _ := operation.List()
-	counts := map[string]int{"active": 0, "queued": 0, "completed": 0, "failed": 0}
+	counts := map[string]int{
+		"active": 0, "queued": 0, "completed": 0, "failed": 0,
+		"cancelled": 0, "crashed": 0, "setup": 0, "config": 0,
+	}
 	for _, op := range all {
 		counts[op.Status]++
+		if op.Status == "failed" && op.FailureReason != nil {
+			switch *op.FailureReason {
+			case "cancelled_by_user":
+				counts["cancelled"]++
+			case "process_exited_without_completion":
+				counts["crashed"]++
+			case "classify_spawn_failed", "classify_move_failed", "provision_failed", "launch_failed":
+				counts["setup"]++
+			case "classify_no_squad", "classify_squad_not_installed":
+				counts["config"]++
+			}
+		}
 	}
 	json.NewEncoder(w).Encode(counts)
 }

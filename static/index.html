@@ -13,17 +13,19 @@
   <h1>⚡ SWAT Dashboard</h1>
   <div class="stats">
     <span class="stat active" id="stat-active">Active: 0</span>
-    <span class="stat" id="stat-completed">Completed: 0</span>
-    <span class="stat failed" id="stat-failed">Failed: 0</span>
+    <span class="stat cancelled" id="stat-cancelled">Cancelled: 0</span>
+    <span class="stat crashed" id="stat-crashed">Crashed: 0</span>
+    <span class="stat setup" id="stat-setup">Setup: 0</span>
+    <span class="stat config" id="stat-config">Config: 0</span>
   </div>
 </div>
 
 <div class="main">
   <div class="left">
-    <div class="section-title">Active</div>
+    <div class="section-title" id="section-active-title">Active</div>
     <div class="active-list" id="active-list"></div>
 
-    <div class="section-title">History</div>
+    <div class="section-title" id="section-history-title">History</div>
     <div class="filters">
       <select id="filter-squad"><option value="">All Squads</option></select>
       <select id="filter-status">
@@ -32,7 +34,10 @@
         <option value="queued">Queued</option>
         <option value="completed">Completed</option>
         <option value="failed">Failed</option>
-        <option value="cancelled">Cancelled</option>
+        <option value="failed:crashed">&nbsp;&nbsp;↳ Crashed</option>
+        <option value="failed:setup">&nbsp;&nbsp;↳ Setup Failed</option>
+        <option value="failed:config">&nbsp;&nbsp;↳ Config Needed</option>
+        <option value="failed:cancelled">&nbsp;&nbsp;↳ Cancelled</option>
       </select>
       <input type="text" id="filter-keyword" placeholder="Search...">
     </div>
@@ -67,6 +72,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.1/dist/purify.min.js"></script>
+<script src="failureReasons.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

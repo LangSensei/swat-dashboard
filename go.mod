@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/LangSensei/swat v1.2.0
+	github.com/LangSensei/swat v1.2.2
 	github.com/UserExistsError/conpty v0.1.4
 	golang.org/x/sys v0.37.0 // indirect
 )
