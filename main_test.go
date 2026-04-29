@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 )
 
@@ -383,5 +385,115 @@ func TestContainsCI(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("containsCI(%q, %q) = %v, want %v", tc.s, tc.sub, got, tc.want)
 		}
+	}
+}
+
+// TestBuildSessionArgsCopilotColdStart verifies that on cold start (no session
+// store), the copilot branch includes -i with the prompt.
+func TestBuildSessionArgsCopilotColdStart(t *testing.T) {
+	// No session store → cold start.
+	prevStore := sessionStore
+	sessionStore = nil
+	t.Cleanup(func() { sessionStore = prevStore })
+
+	cmd, args, err := buildSessionArgs("copilot", "test prompt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd != "copilot" {
+		t.Fatalf("expected cmd=copilot, got %s", cmd)
+	}
+	if !slices.Contains(args, "-i") {
+		t.Fatal("cold start: expected -i in args, got", args)
+	}
+	iIdx := slices.Index(args, "-i")
+	if iIdx+1 >= len(args) || args[iIdx+1] != "test prompt" {
+		t.Fatalf("cold start: expected -i followed by prompt, got %v", args)
+	}
+	if slices.Contains(args, "--resume") {
+		t.Fatal("cold start: --resume should not be present without session store")
+	}
+	if !slices.Contains(args, "--yolo") {
+		t.Fatal("expected --yolo in copilot args")
+	}
+}
+
+// TestBuildSessionArgsCopilotWarmStart verifies that on warm start (session
+// store has a GUID for copilot), the copilot branch does NOT include -i but
+// DOES include --resume.
+func TestBuildSessionArgsCopilotWarmStart(t *testing.T) {
+	store := setSessionStoreForTest(t, "copilot")
+	// Pre-populate a GUID for copilot so GUIDFor returns an existing one.
+	_ = store.GUIDFor("copilot")
+
+	cmd, args, err := buildSessionArgs("copilot", "test prompt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd != "copilot" {
+		t.Fatalf("expected cmd=copilot, got %s", cmd)
+	}
+	if slices.Contains(args, "-i") {
+		t.Fatalf("warm start: -i must NOT be present when resuming, got %v", args)
+	}
+	if !slices.Contains(args, "--resume") {
+		t.Fatal("warm start: expected --resume in args, got", args)
+	}
+	if !slices.Contains(args, "--yolo") {
+		t.Fatal("expected --yolo in copilot args")
+	}
+}
+
+// TestBuildSessionArgsGeminiUnchanged verifies that the gemini branch still
+// uses -i only when guid is empty (seed failure path).
+func TestBuildSessionArgsGeminiUnchanged(t *testing.T) {
+	_ = setSessionStoreForTest(t, "gemini")
+
+	// Stub seedGeminiSessionFn to simulate seed failure (no guid).
+	prevSeed := seedGeminiSessionFn
+	seedGeminiSessionFn = func(string) (string, error) {
+		return "", fmt.Errorf("stub seed failure")
+	}
+	t.Cleanup(func() { seedGeminiSessionFn = prevSeed })
+
+	// Cold start: no pre-existing GUID, seed fails → -i should be present.
+	cmd, args, err := buildSessionArgs("gemini", "test prompt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd != "gemini" {
+		t.Fatalf("expected cmd=gemini, got %s", cmd)
+	}
+	if !slices.Contains(args, "-i") {
+		t.Fatal("gemini cold start with seed failure: expected -i in args, got", args)
+	}
+	if slices.Contains(args, "--resume") {
+		t.Fatal("gemini cold start with seed failure: --resume should not be present")
+	}
+
+	// Warm start: pre-populate a GUID for gemini.
+	if err := sessionStore.SetGUID("gemini", "test-session-id"); err != nil {
+		t.Fatalf("SetGUID: %v", err)
+	}
+	cmd2, args2, err := buildSessionArgs("gemini", "test prompt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd2 != "gemini" {
+		t.Fatalf("expected cmd=gemini, got %s", cmd2)
+	}
+	if slices.Contains(args2, "-i") {
+		t.Fatalf("gemini warm start: -i must NOT be present when resuming, got %v", args2)
+	}
+	if !slices.Contains(args2, "--resume") {
+		t.Fatal("gemini warm start: expected --resume in args, got", args2)
+	}
+}
+
+// TestBuildSessionArgsUnknownRuntime verifies unknown runtimes are rejected.
+func TestBuildSessionArgsUnknownRuntime(t *testing.T) {
+	_, _, err := buildSessionArgs("bogus", "prompt")
+	if err == nil {
+		t.Fatal("expected error for unknown runtime")
 	}
 }
