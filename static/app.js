@@ -225,6 +225,7 @@ function showTab(name) {
   document.getElementById('tab-detail').classList.toggle('active', name === 'detail');
   document.getElementById('terminal-container').classList.toggle('visible', name === 'session');
   document.getElementById('detail-view').classList.toggle('visible', name === 'detail');
+  if (name !== 'detail') stopDetailRefresh();
   if (name === 'session' && currentRuntime && terminals[currentRuntime]) {
     terminals[currentRuntime].fitAddon.fit();
     terminals[currentRuntime].term.focus();
@@ -893,6 +894,15 @@ function startDetailRefresh(op) {
 function stopDetailRefresh() {
   if (detailRefreshTimer) { clearInterval(detailRefreshTimer); detailRefreshTimer = null; }
 }
+
+// Pause detail polling when the browser tab is hidden; resume when visible.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopDetailRefresh();
+  } else if (selectedOpData && document.getElementById('detail-view').classList.contains('visible')) {
+    startDetailRefresh(selectedOpData);
+  }
+});
 
 async function refreshSelectedDetail() {
   if (!selectedOp || !selectedOpData) return;
