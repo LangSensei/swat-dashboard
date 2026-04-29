@@ -22,6 +22,7 @@ type SessionStore struct {
 	path     string
 	Active   string            `json:"active"`
 	Sessions map[string]string `json:"sessions"`
+	Version  int               `json:"version"`
 }
 
 // sessionStoreDir returns the directory holding sessions.json. SWAT_DASHBOARD_HOME
@@ -51,12 +52,16 @@ func LoadOrInitStore() (*SessionStore, error) {
 	return loadOrInitStoreAt(filepath.Join(dir, "sessions.json"))
 }
 
+// storeVersion is the current schema version. Bump when adding migrations.
+const storeVersion = 2
+
 // loadOrInitStoreAt is the testable core of LoadOrInitStore.
 func loadOrInitStoreAt(path string) (*SessionStore, error) {
 	s := &SessionStore{
 		path:     path,
 		Active:   "copilot",
 		Sessions: map[string]string{},
+		Version:  storeVersion,
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -71,6 +76,7 @@ func loadOrInitStoreAt(path string) (*SessionStore, error) {
 	var raw struct {
 		Active   string            `json:"active"`
 		Sessions map[string]string `json:"sessions"`
+		Version  int               `json:"version"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		// Corrupt → back up and rebuild.
@@ -89,11 +95,24 @@ func loadOrInitStoreAt(path string) (*SessionStore, error) {
 	if raw.Sessions != nil {
 		s.Sessions = raw.Sessions
 	}
+	s.Version = raw.Version
+
+	// Migration: v0/v1 → v2. Clear auto-generated gemini session IDs that
+	// were created by GUIDFor before Option D seeding was implemented.
+	// These IDs are always UUID v4 and never worked with gemini's --resume.
+	if s.Version < 2 {
+		delete(s.Sessions, "gemini")
+		s.Version = storeVersion
+		_ = s.persistLocked()
+	}
+
 	return s, nil
 }
 
 // GUIDFor returns a stable UUID v4 for runtime, generating and persisting a
 // new one if the existing entry is missing or not a valid UUID v4.
+// This is only appropriate for runtimes that support create-on-miss (copilot).
+// For runtimes that require externally-seeded IDs (gemini), use GetGUID.
 func (s *SessionStore) GUIDFor(runtime string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -107,6 +126,34 @@ func (s *SessionStore) GUIDFor(runtime string) string {
 	s.Sessions[runtime] = id
 	_ = s.persistLocked()
 	return id
+}
+
+// GetGUID returns the stored session ID for runtime without generating one.
+// Returns empty string if no session ID is stored. Use this for runtimes
+// where session IDs must come from an external source (e.g. gemini seed).
+func (s *SessionStore) GetGUID(runtime string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Sessions[runtime]
+}
+
+// SetGUID stores an externally-provided session ID for runtime.
+func (s *SessionStore) SetGUID(runtime, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Sessions == nil {
+		s.Sessions = map[string]string{}
+	}
+	s.Sessions[runtime] = id
+	return s.persistLocked()
+}
+
+// ClearGUID removes the stored session ID for runtime.
+func (s *SessionStore) ClearGUID(runtime string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.Sessions, runtime)
+	return s.persistLocked()
 }
 
 // SetActive persists active runtime atomically.
@@ -143,7 +190,8 @@ func (s *SessionStore) persistLocked() error {
 	payload := struct {
 		Active   string            `json:"active"`
 		Sessions map[string]string `json:"sessions"`
-	}{Active: s.Active, Sessions: s.Sessions}
+		Version  int               `json:"version"`
+	}{Active: s.Active, Sessions: s.Sessions, Version: s.Version}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal session store: %w", err)
