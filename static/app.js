@@ -524,37 +524,44 @@ async function selectOp(op) {
   showTab('detail');
 
   // Tear down any prior iframe's resize listeners before rebuilding
-  // #file-content-area; covers branches (e.g. zero-files op) that don't
-  // delegate to loadFileContent.
   teardownActiveIframeResize();
 
   document.getElementById('detail-empty').style.display = 'none';
   const content = document.getElementById('detail-content');
   content.style.display = '';
 
-  // Build metadata section
+  // #6 Status surface: bucket-colored left-border on detail panel
+  content.className = '';
+  const border = cardBorderClass(op);
+  if (border) content.classList.add('detail-panel', border);
+
   const dotClass = statusDotClass(op);
   const createdRel = relativeTime(op.created_at);
   const completedRel = op.completed_at ? relativeTime(op.completed_at) : 'running';
-  let html = `
-    <div class="detail-field">
-      <div class="detail-label">Operation</div>
-      <div class="detail-value">${escapeHtml(op.id)} &nbsp; <span class="status-dot ${dotClass}"></span>${escapeHtml(op.status)}</div>
-    </div>
-    <div class="detail-field">
-      <div class="detail-label">Squad</div>
-      <div class="detail-value"><span class="squad-chip" style="background:${squadColor(op.squad || '')}">${escapeHtml(op.squad)}</span></div>
-    </div>
+
+  // #1 Markdown render brief/summary
+  const briefHtml = renderMarkdown(op.brief);
+  const summaryHtml = op.summary ? renderMarkdown(op.summary) : '';
+
+  // #2 Sidebar metadata layout (right sidebar) + main column
+  let html = '<div class="detail-layout">';
+
+  // Main column (left)
+  html += '<div class="detail-main">';
+  html += `
     <div class="detail-field">
       <div class="detail-label">Brief</div>
-      <div class="detail-value">${escapeHtml(op.brief || '\u2014')}</div>
-    </div>
-    ${op.summary ? `<div class="detail-field"><div class="detail-label">Summary</div><div class="detail-value">${escapeHtml(op.summary)}</div></div>` : ''}
-    <div class="detail-field">
-      <div class="detail-label">Duration</div>
-      <div class="detail-value">${escapeHtml(op.elapsed || '\u2014')} &nbsp; (<span title="${escapeHtml(op.created_at || '')}">${escapeHtml(createdRel || '?')}</span> \u2192 <span title="${escapeHtml(op.completed_at || '')}">${escapeHtml(completedRel)}</span>)</div>
+      <div class="detail-value"><div class="md-content">${briefHtml}</div></div>
     </div>
   `;
+  if (op.summary) {
+    html += `
+    <div class="detail-field">
+      <div class="detail-label">Summary</div>
+      <div class="detail-value"><div class="md-content">${summaryHtml}</div></div>
+    </div>
+    `;
+  }
 
   // Failure block: structured display when op has a failure_reason
   if (op.status === 'failed' && op.failure_reason && typeof FAILURE_REASONS !== 'undefined') {
@@ -591,6 +598,60 @@ async function selectOp(op) {
     `;
   }
 
+  // #3 References folding
+  if (op.references && op.references.length > 0) {
+    let refsInner = '';
+    op.references.forEach(ref => {
+      const val = escapeHtml(ref.value);
+      if (ref.type === 'operation') {
+        const opId = escapeHtml(extractOpId(ref.value));
+        refsInner += `<li><a href="#" class="ref-link" data-op-id="${opId}">${opId}</a></li>`;
+      } else {
+        refsInner += `<li><span class="ref-type">${escapeHtml(ref.type)}</span>: ${val}</li>`;
+      }
+    });
+    html += `
+    <details class="detail-references">
+      <summary>References (${op.references.length})</summary>
+      <ul>${refsInner}</ul>
+    </details>
+    `;
+  }
+
+  html += '</div>'; // end detail-main
+
+  // Sidebar (right)
+  html += '<div class="detail-sidebar">';
+  html += `
+    <div class="sidebar-field">
+      <div class="sidebar-label">Operation</div>
+      <div class="sidebar-value mono">${escapeHtml(op.id)}</div>
+    </div>
+    <div class="sidebar-field">
+      <div class="sidebar-label">Squad</div>
+      <div class="sidebar-value"><span class="squad-chip" style="background:${squadColor(op.squad || '')}">${escapeHtml(op.squad || '\u2014')}</span></div>
+    </div>
+    <div class="sidebar-field">
+      <div class="sidebar-label">Status</div>
+      <div class="sidebar-value"><span class="status-dot ${dotClass}"></span>${escapeHtml(op.status)}</div>
+    </div>
+    <div class="sidebar-field">
+      <div class="sidebar-label">Duration</div>
+      <div class="sidebar-value">${escapeHtml(op.elapsed || '\u2014')}</div>
+    </div>
+    <div class="sidebar-field">
+      <div class="sidebar-label">Created</div>
+      <div class="sidebar-value" title="${escapeHtml(op.created_at || '')}">${escapeHtml(createdRel || '?')}</div>
+    </div>
+    <div class="sidebar-field">
+      <div class="sidebar-label">Completed</div>
+      <div class="sidebar-value" title="${escapeHtml(op.completed_at || '')}">${escapeHtml(completedRel)}</div>
+    </div>
+  `;
+  html += '</div>'; // end detail-sidebar
+  html += '</div>'; // end detail-layout
+
+  // File tabs and content (full width, outside the 2-column grid)
   html += `
     <div id="file-tabs-container"></div>
     <div class="detail-field">
@@ -600,12 +661,36 @@ async function selectOp(op) {
   `;
   content.innerHTML = html;
 
+  // Bind reference link click handlers (event delegation)
+  content.querySelectorAll('.ref-link').forEach(link => {
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const refId = link.dataset.opId;
+      try {
+        const resp = await fetch('/api/ops?q=' + encodeURIComponent(refId) + '&limit=100');
+        const data = await resp.json();
+        const refOp = (data.operations || []).find(o => o.id === refId);
+        if (refOp) selectOp(refOp);
+        else toast('Referenced operation not found: ' + refId);
+      } catch (err) {
+        toast('Failed to load reference: ' + err.message, 'error');
+      }
+    });
+  });
+
+  // Stale-request guard
+  if (selectedOp !== op.id) return;
+
   // Fetch file list
   let files = [];
   try {
     const filesResp = await fetch(`/api/files?op=${encodeURIComponent(op.id)}`);
+    if (selectedOp !== op.id) return;
     if (filesResp.ok) files = (await filesResp.json()) || [];
   } catch(e) {}
+
+  // Stale-request guard after files fetch
+  if (selectedOp !== op.id) return;
 
   // Render file tabs
   const tabsContainer = document.getElementById('file-tabs-container');
@@ -621,8 +706,6 @@ async function selectOp(op) {
       tabsDiv.appendChild(tab);
     });
     tabsContainer.appendChild(tabsDiv);
-    // File tabs already display the active filename; suppress the redundant
-    // heading above the content area to avoid duplication.
     if (labelEl) labelEl.style.display = 'none';
   }
 
@@ -632,7 +715,7 @@ async function selectOp(op) {
     loadFileContent(op.id, defaultFile, tabsContainer.querySelector('.file-tabs'));
   } else {
     document.getElementById('file-content-label').textContent = '';
-    document.getElementById('file-content-pre').textContent = 'No files available';
+    document.getElementById('file-content-area').textContent = 'No files available';
   }
 
   // Highlight selected card
@@ -665,8 +748,7 @@ async function loadFileContent(opId, filename, tabsDiv) {
     const ext = filename.split('.').pop().toLowerCase();
 
     if (ext === 'md' && typeof marked !== 'undefined') {
-      const rawHtml = marked.parse(text);
-      const sanitized = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
+      const sanitized = renderMarkdown(text);
       contentArea.innerHTML = `<div class="md-content">${sanitized}</div>`;
     } else if (ext === 'html' || ext === 'htm') {
       const fileUrl = `/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`;
@@ -689,6 +771,23 @@ async function loadFileContent(opId, filename, tabsDiv) {
 
 function escapeHtml(str) {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Render markdown to sanitized HTML. Falls back to escaped plain text when
+// DOMPurify is unavailable so unsanitized marked output is never injected.
+function renderMarkdown(text) {
+  if (!text || typeof marked === 'undefined') return escapeHtml(text || '\u2014');
+  const raw = marked.parse(text);
+  if (typeof DOMPurify !== 'undefined') return DOMPurify.sanitize(raw);
+  return escapeHtml(text);
+}
+
+// Extract an operation ID (YYYYMMDD-hex) from a reference value that may be
+// a relative filesystem path like "../../squad/operations/20260317-b0320d3a/".
+function extractOpId(refValue) {
+  if (!refValue) return refValue;
+  const match = refValue.match(/(\d{8}-[0-9a-f]+)/);
+  return match ? match[1] : refValue;
 }
 
 // Resize iframe to its content height so it scrolls with the parent

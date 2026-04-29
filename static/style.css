@@ -80,8 +80,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 /* Right panel */
 .right { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .right-header { display: flex; align-items: center; padding: 8px 16px; background: var(--color-canvas-overlay); border-bottom: 1px solid var(--color-border-default); gap: 8px; }
+/* #4 Tab hierarchy: top-level tabs (Session/Detail) get heavier visual weight */
 .tab { padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--color-fg-muted); }
 .tab.active { background: var(--color-canvas-subtle); color: var(--color-fg-default); }
+.tab-primary { padding: 8px 18px; font-size: 14px; font-weight: 600; border: 1px solid var(--color-border-default); }
+.tab-primary.active { background: var(--color-accent-fg); color: #fff; border-color: var(--color-accent-fg); }
 .right-content { flex: 1; overflow: hidden; position: relative; }
 
 /* Terminal */
@@ -136,6 +139,38 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
    scroll handles long content instead of producing a nested scrollbar. */
 .html-frame { width: 100%; border: 1px solid var(--color-border-default); border-radius: 8px; background: #fff; display: block; }
 .open-tab-btn { display: inline-block; margin-bottom: 8px; padding: 4px 12px; background: var(--color-canvas-subtle); border: 1px solid var(--color-border-default); color: var(--color-accent-fg); border-radius: 6px; cursor: pointer; font-size: 12px; text-decoration: none; }
+
+/* #2 Detail layout: two-column grid (main + sidebar) */
+.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 24px; margin-bottom: 16px; }
+.detail-main { min-width: 0; }
+.detail-sidebar { display: flex; flex-direction: column; gap: 12px; padding: 12px; background: var(--color-canvas-overlay); border: 1px solid var(--color-border-default); border-radius: 8px; align-self: start; }
+.sidebar-field {}
+.sidebar-label { font-size: 10px; text-transform: uppercase; color: var(--color-fg-muted); letter-spacing: 0.5px; margin-bottom: 2px; }
+.sidebar-value { font-size: 13px; color: var(--color-fg-default); line-height: 1.4; overflow-wrap: anywhere; }
+.sidebar-value.mono { font-family: var(--font-mono); font-size: 12px; }
+@media (max-width: 700px) {
+  .detail-layout { grid-template-columns: 1fr; }
+  .detail-sidebar { order: -1; }
+}
+
+/* #3 References folding */
+.detail-references { margin-top: 8px; margin-bottom: 16px; }
+.detail-references summary { cursor: pointer; font-size: 13px; color: var(--color-fg-muted); padding: 6px 0; font-weight: 500; }
+.detail-references summary:hover { color: var(--color-fg-default); }
+.detail-references ul { list-style: none; padding: 4px 0 4px 8px; }
+.detail-references li { padding: 4px 0; font-size: 13px; font-family: var(--font-mono); }
+.detail-references .ref-link { color: var(--color-accent-fg); text-decoration: none; }
+.detail-references .ref-link:hover { text-decoration: underline; }
+.detail-references .ref-type { color: var(--color-fg-muted); font-size: 11px; text-transform: uppercase; }
+
+/* #6 Status surface: bucket-colored left-border on detail panel */
+.detail-panel { border-left: 4px solid transparent; padding-left: 16px; }
+.detail-panel.border-cancelled { border-left-color: var(--color-fg-muted); }
+.detail-panel.border-crashed { border-left-color: var(--color-danger-fg); }
+.detail-panel.border-setup { border-left-color: var(--color-attention-fg); }
+.detail-panel.border-config { border-left-color: var(--color-done-fg); }
+.detail-panel.border-active { border-left-color: var(--color-success-fg); }
+.detail-panel.border-completed { border-left-color: var(--color-fg-muted); }
 
 /* Empty state */
 .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--color-fg-muted); font-size: 14px; }
