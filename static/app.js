@@ -497,8 +497,22 @@ async function loadActiveOps() {
       }
     }
 
-    activeList.innerHTML = '';
-    activeList.appendChild(fragment);
+    // In-place reconcile to preserve DOM node identity and CSS animations
+    const desiredNodes = Array.from(fragment.childNodes);
+    const currentNodes = Array.from(activeList.childNodes);
+    for (const node of currentNodes) {
+      if (!desiredNodes.includes(node)) {
+        activeList.removeChild(node);
+      }
+    }
+    let refNode = activeList.firstChild;
+    for (const node of desiredNodes) {
+      if (node === refNode) {
+        refNode = refNode.nextSibling;
+      } else {
+        activeList.insertBefore(node, refNode);
+      }
+    }
     checkGlobalEmpty();
   } catch(e) {
     // Leave previous content intact on transient failure to avoid flicker.
@@ -517,12 +531,12 @@ function getTimeBucket(isoStr) {
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterdayStart = new Date(todayStart);
   yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-  const weekStart = new Date(todayStart);
-  weekStart.setDate(weekStart.getDate() - todayStart.getDay());
+  const weekAgo = new Date(todayStart);
+  weekAgo.setDate(weekAgo.getDate() - 6); // 7-day rolling window
 
   if (d >= todayStart) return 'Today';
   if (d >= yesterdayStart) return 'Yesterday';
-  if (d >= weekStart) return 'This Week';
+  if (d >= weekAgo) return 'This Week';
   return 'Earlier';
 }
 
@@ -578,10 +592,34 @@ function renderHistoryWithBuckets() {
   }
 
   const sentinel = document.getElementById('history-sentinel');
-  historyList.innerHTML = '';
-  historyList.appendChild(fragment);
-  historyList.appendChild(sentinel);
+
+  // In-place reconcile to preserve DOM node identity and CSS animations
+  const desiredNodes = Array.from(fragment.childNodes);
+  desiredNodes.push(sentinel); // sentinel always goes at the end
+  const currentNodes = Array.from(historyList.childNodes);
+  for (const node of currentNodes) {
+    if (!desiredNodes.includes(node)) {
+      historyList.removeChild(node);
+    }
+  }
+  let refNode = historyList.firstChild;
+  for (const node of desiredNodes) {
+    if (node === refNode) {
+      refNode = refNode.nextSibling;
+    } else {
+      historyList.insertBefore(node, refNode);
+    }
+  }
   checkGlobalEmpty();
+}
+
+function isSentinelVisible() {
+  const sentinel = document.getElementById('history-sentinel');
+  const scrollRoot = document.querySelector('.history-list');
+  if (!sentinel || !scrollRoot) return false;
+  const rootRect = scrollRoot.getBoundingClientRect();
+  const sentinelRect = sentinel.getBoundingClientRect();
+  return sentinelRect.top < rootRect.bottom + 100;
 }
 
 async function loadHistoryOps(reset = true) {
@@ -654,6 +692,11 @@ async function loadHistoryOps(reset = true) {
 
     renderHistoryWithBuckets();
     updateInfiniteScroll();
+
+    // Auto-fill: if filtered results didn't fill viewport, keep loading
+    if (historyOffset < historyTotal && isSentinelVisible()) {
+      await loadMore();
+    }
   } catch(e) {
     if (reset && historyOffset === 0) {
       renderEmpty(document.getElementById('history-list'), 'Failed to load history');
