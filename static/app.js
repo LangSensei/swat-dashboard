@@ -344,25 +344,14 @@ function parseFilterValue(dropdown) {
   return { status: dropdown, bucket: null };
 }
 
-// Compute the status filter for the active list.
-// - No dropdown filter → both active and queued
-// - Dropdown matches an "active-bucket" status → that single status
-// - Dropdown matches a terminal status → active list is empty (filter excludes it)
-function activeStatusFilter(dropdown) {
-  const { status } = parseFilterValue(dropdown);
-  if (!status) return ACTIVE_STATUSES;
-  if (status === 'active' || status === 'queued') return status;
-  return null; // active list shows empty state
-}
-
 // Compute the status filter for the history list.
 // - No dropdown filter → all terminal statuses
 // - Dropdown matches a terminal status → that single status
-// - Dropdown matches an active-bucket status → history list is empty
+// - Dropdown matches an active-bucket status → treat as no filter (show all terminal)
 function historyStatusFilter(dropdown) {
   const { status } = parseFilterValue(dropdown);
   if (!status) return HISTORY_STATUSES;
-  if (status === 'active' || status === 'queued') return null;
+  if (status === 'active' || status === 'queued') return HISTORY_STATUSES;
   return status;
 }
 
@@ -384,16 +373,10 @@ function renderEmpty(container, text) {
 async function loadActiveOps() {
   const squad = document.getElementById('filter-squad').value;
   const keyword = document.getElementById('filter-keyword').value;
-  const dropdown = document.getElementById('filter-status').value;
 
   const activeList = document.getElementById('active-list');
-  const filter = activeStatusFilter(dropdown);
-  if (filter === null) {
-    renderEmpty(activeList, 'No active operations match the current filter');
-    return;
-  }
 
-  const params = new URLSearchParams({ limit: '100', offset: '0', status: filter });
+  const params = new URLSearchParams({ limit: '100', offset: '0', status: ACTIVE_STATUSES });
   if (squad) params.set('squad', squad);
   if (keyword) params.set('q', keyword);
 
