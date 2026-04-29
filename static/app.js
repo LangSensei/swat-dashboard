@@ -832,7 +832,7 @@ function categorizeFiles(files) {
     for (const [cat, def] of Object.entries(FILE_CATEGORIES)) {
       if (def.patterns.some(p => p.test(f))) { cats[cat].push(f); matched = true; break; }
     }
-    if (!matched) cats.working.push(f); // unmatched → working files
+    if (!matched) cats.other.push(f);
   }
   return cats;
 }
@@ -852,6 +852,8 @@ async function cancelOp(opId) {
       loadHistoryOps(true);
       loadStats();
       if (selectedOp === opId) refreshSelectedDetail();
+    } else if (resp.status === 501) {
+      toast('Cancel not yet implemented — coming soon', 'error');
     } else {
       toast('Cancel failed: ' + await resp.text(), 'error');
     }
@@ -871,6 +873,8 @@ async function retryOp(opId) {
       loadActiveOps();
       loadHistoryOps(true);
       loadStats();
+    } else if (resp.status === 501) {
+      toast('Retry not yet implemented — coming soon', 'error');
     } else {
       toast('Retry failed: ' + await resp.text(), 'error');
     }
@@ -1281,6 +1285,15 @@ function renderFileCategories(op, cats, container) {
   }
 
   container.innerHTML = html;
+
+  // Event delegation for file category items (avoids inline onclick with quote issues)
+  container.addEventListener('click', function(e) {
+    const item = e.target.closest('.file-category-item');
+    if (!item) return;
+    const file = item.getAttribute('data-file');
+    const opId = item.getAttribute('data-op');
+    if (file && opId) toggleFileInCategory(item, opId, file);
+  });
 }
 
 function getPrimaryShownFiles(op) {
@@ -1311,7 +1324,7 @@ function renderCategorySection(id, def, files, opId, openByDefault) {
   html += '<div class="file-category-list">';
   for (const f of files) {
     const safeF = escapeHtml(f);
-    html += '<div class="file-category-item" data-file="' + safeF + '" onclick="toggleFileInCategory(this,\'' + escapeHtml(opId) + '\',\'' + safeF + '\')">' + safeF + '</div>';
+    html += '<div class="file-category-item" data-file="' + safeF + '" data-op="' + escapeHtml(opId) + '">' + safeF + '</div>';
   }
   html += '</div></details>';
   return html;
