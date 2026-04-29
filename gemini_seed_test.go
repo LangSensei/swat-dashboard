@@ -11,6 +11,11 @@ import (
 // TestSeedGeminiSessionParsesInitEvent verifies that seedGeminiSession
 // correctly parses the init event from gemini's stream-json output.
 func TestSeedGeminiSessionParsesInitEvent(t *testing.T) {
+	// Override swatDir so tests don't depend on ~/.swat existing.
+	origSwatDir := swatDir
+	swatDir = t.TempDir()
+	t.Cleanup(func() { swatDir = origSwatDir })
+
 	// Create a fake "gemini" script that outputs stream-json with an init event.
 	dir := t.TempDir()
 	wantID := "22846597-45c3-4478-ac78-031382fdb822"
@@ -42,6 +47,10 @@ func TestSeedGeminiSessionParsesInitEvent(t *testing.T) {
 // TestSeedGeminiSessionHandlesNoInitEvent verifies graceful failure when
 // gemini produces no init event.
 func TestSeedGeminiSessionHandlesNoInitEvent(t *testing.T) {
+	origSwatDir := swatDir
+	swatDir = t.TempDir()
+	t.Cleanup(func() { swatDir = origSwatDir })
+
 	dir := t.TempDir()
 	script := "#!/bin/sh\necho '{\"type\":\"output\",\"text\":\"hello\"}'\n"
 	scriptPath := filepath.Join(dir, "gemini")
@@ -61,6 +70,10 @@ func TestSeedGeminiSessionHandlesNoInitEvent(t *testing.T) {
 // TestSeedGeminiSessionHandlesMultipleLines verifies that the scanner
 // correctly finds the init event among multiple JSON lines.
 func TestSeedGeminiSessionHandlesMultipleLines(t *testing.T) {
+	origSwatDir := swatDir
+	swatDir = t.TempDir()
+	t.Cleanup(func() { swatDir = origSwatDir })
+
 	dir := t.TempDir()
 	wantID := "abcdef12-3456-4789-abcd-ef0123456789"
 	script := fmt.Sprintf(`#!/bin/sh

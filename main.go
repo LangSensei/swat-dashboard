@@ -364,6 +364,10 @@ func autoStartActiveSession() {
 // to emit an init event during session seeding.
 const seedGeminiSessionTimeout = 30 * time.Second
 
+// swatDir is the working directory used for CLI subprocesses (gemini, copilot).
+// Tests override this to avoid depending on ~/.swat existing.
+var swatDir = filepath.Join(homeDir(), ".swat")
+
 // seedGeminiSession runs gemini non-interactively with stream-json output to
 // create a new session and extract the session_id from the init event.
 func seedGeminiSession(prompt string) (string, error) {
@@ -372,7 +376,7 @@ func seedGeminiSession(prompt string) (string, error) {
 
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--skip-trust"}
 	cmd := exec.CommandContext(ctx, "gemini", args...)
-	cmd.Dir = filepath.Join(homeDir(), ".swat")
+	cmd.Dir = swatDir
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -480,7 +484,7 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 		args = append(args, "--yolo")
 	}
 	cmd := exec.Command(cmdName, args...)
-	cmd.Dir = filepath.Join(homeDir(), ".swat")
+	cmd.Dir = swatDir
 	return startPTY(cmd)
 }
 
