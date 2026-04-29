@@ -530,7 +530,9 @@ function renderHistoryWithBuckets() {
   const historyList = document.getElementById('history-list');
 
   if (historyOpsCache.length === 0) {
+    const sentinel = document.getElementById('history-sentinel');
     historyList.innerHTML = '';
+    historyList.appendChild(sentinel);
     renderEmpty(historyList, 'No operations');
     checkGlobalEmpty();
     return;
@@ -575,8 +577,10 @@ function renderHistoryWithBuckets() {
     }
   }
 
+  const sentinel = document.getElementById('history-sentinel');
   historyList.innerHTML = '';
   historyList.appendChild(fragment);
+  historyList.appendChild(sentinel);
   checkGlobalEmpty();
 }
 
@@ -1114,8 +1118,10 @@ function removeSkeleton(container) {
 function showSkeletons() {
   const activeList = document.getElementById('active-list');
   const historyList = document.getElementById('history-list');
+  const sentinel = document.getElementById('history-sentinel');
   activeList.innerHTML = '';
   historyList.innerHTML = '';
+  historyList.appendChild(sentinel);
   renderSkeletonCards(activeList, 3);
   renderSkeletonCards(historyList, 5);
   initialLoadStarted = Date.now();
