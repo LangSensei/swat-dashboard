@@ -430,7 +430,11 @@ func seedGeminiSession(prompt string) (string, error) {
 // seedGeminiSessionFn is a test hook for seedGeminiSession.
 var seedGeminiSessionFn = seedGeminiSession
 
-func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
+// buildSessionArgs constructs the CLI arguments for a given runtime and
+// prompt, consulting the global sessionStore for resume GUIDs. It returns the
+// command name and the argument slice. Extracted from createPTYSession for
+// testability.
+func buildSessionArgs(runtimeName, prompt string) (string, []string, error) {
 	var cmdName string
 	switch runtimeName {
 	case "copilot":
@@ -438,29 +442,16 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	case "gemini":
 		cmdName = "gemini"
 	default:
-		return nil, fmt.Errorf("unknown runtime: %s", runtimeName)
+		return "", nil, fmt.Errorf("unknown runtime: %s", runtimeName)
 	}
 
-	if _, err := exec.LookPath(cmdName); err != nil {
-		return nil, fmt.Errorf("%s CLI not found. Please install it first", cmdName)
-	}
-
-	// `--resume <guid>` MUST come first so neither CLI's flag parser confuses
-	// it with the operator prompt that follows. Both copilot and gemini accept
-	// `--resume` together with `-i prompt` (resume restores conversation
-	// history; `-i` injects the operator-level system prompt). Issue #29
-	// confirms this orthogonality.
 	var args []string
 	if cmdName == "gemini" {
-		// Gemini does not support create-on-miss: --resume only works with
-		// existing sessions. Use GetGUID (no auto-generation) and seed a new
-		// session via stream-json if needed (Option D, issue #32).
 		guid := ""
 		if sessionStore != nil {
 			guid = sessionStore.GetGUID("gemini")
 		}
 		if guid == "" {
-			// Cold start: seed a new session via gemini CLI structured output.
 			if prompt == "" {
 				prompt = defaultPrompt
 			}
@@ -479,26 +470,40 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 		if guid != "" {
 			args = append(args, "--resume", guid)
 		}
-		// On warm start (or after successful seed), skip -i: the session
-		// already has the prompt from the seed call or previous run.
-		// On fallback (no guid), inject the prompt so gemini starts fresh.
 		if guid == "" && prompt != "" {
 			args = append(args, "-i", prompt)
 		}
 		args = append(args, "--skip-trust", "--approval-mode", "yolo")
 	} else {
-		// Copilot: existing behavior — GUIDFor auto-generates on first use.
+		// Copilot: GUIDFor auto-generates on first use.
+		guid := ""
 		if sessionStore != nil {
-			guid := sessionStore.GUIDFor(runtimeName)
+			guid = sessionStore.GUIDFor(runtimeName)
 			if guid != "" {
 				args = append(args, "--resume", guid)
 			}
 		}
-		if prompt != "" {
+		// Only inject the operator prompt on cold start (no existing session).
+		// On warm start (resume), the session already has the prompt from the
+		// initial run; passing -i again duplicates it into the conversation.
+		if guid == "" && prompt != "" {
 			args = append(args, "-i", prompt)
 		}
 		args = append(args, "--yolo")
 	}
+	return cmdName, args, nil
+}
+
+func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
+	cmdName, args, err := buildSessionArgs(runtimeName, prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := exec.LookPath(cmdName); err != nil {
+		return nil, fmt.Errorf("%s CLI not found. Please install it first", cmdName)
+	}
+
 	cmd := exec.Command(cmdName, args...)
 	cmd.Dir = swatDir
 	return startPTY(cmd)
