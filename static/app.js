@@ -7,7 +7,7 @@
 // (`operation.Status` in github.com/LangSensei/swat/operation). When that enum
 // changes (rename / add / remove), update both lists below so polling does not
 // silently drop ops. The backend `/api/ops?status=` accepts a comma list.
-const ACTIVE_STATUSES = 'active,queued';
+const ACTIVE_STATUSES = 'active,queued,classifying';
 const HISTORY_STATUSES = 'completed,failed,cancelled';
 let historyOffset = 0;
 let historyTotal = 0;
@@ -15,6 +15,18 @@ let selectedOp = null;
 // Per-runtime terminal state: { term, fitAddon, ws, closeTimer, div }
 const terminals = {};
 let currentRuntime = null;
+
+// --- Keyed reconcile state ---
+// Cache of loaded history ops for time-bucket grouping
+let historyOpsCache = [];
+// Flags for skeleton/empty-state coordination
+let initialLoadStarted = 0;
+let activeFirstLoaded = false;
+let historyFirstLoaded = false;
+let isLoadingHistory = false;
+
+// IntersectionObserver for infinite scroll
+let historyObserver = null;
 
 function getOrCreateTerminal(rt) {
   if (terminals[rt]) return terminals[rt];
@@ -273,25 +285,39 @@ function statusDotClass(op) {
   return op.status;
 }
 
-function renderOpCard(op, container) {
+function createOpCard(op) {
   const card = document.createElement('div');
+  card.dataset.opId = op.id;
+  updateOpCard(card, op);
+  return card;
+}
+
+function updateOpCard(card, op) {
   const border = cardBorderClass(op);
   card.className = 'op-card' + (border ? ' ' + border : '') + (selectedOp === op.id ? ' selected' : '');
   card.onclick = () => selectOp(op);
+  card._op = op;
 
-  // Title: summary > brief (sanitized) > id as last resort
+  // Title
   const titleText = op.summary || sanitizeBrief(op.brief) || op.id;
   const fullTitle = op.summary || op.brief || op.id;
-
-  const titleEl = document.createElement('div');
-  titleEl.className = 'op-title';
+  let titleEl = card.querySelector('.op-title');
+  if (!titleEl) {
+    titleEl = document.createElement('div');
+    titleEl.className = 'op-title';
+    card.appendChild(titleEl);
+  }
   titleEl.textContent = titleText;
   titleEl.title = fullTitle;
-  card.appendChild(titleEl);
 
-  // Meta row: squad chip + relative time
-  const metaRow = document.createElement('div');
-  metaRow.className = 'op-meta-row';
+  // Meta row
+  let metaRow = card.querySelector('.op-meta-row');
+  if (!metaRow) {
+    metaRow = document.createElement('div');
+    metaRow.className = 'op-meta-row';
+    card.appendChild(metaRow);
+  }
+  metaRow.innerHTML = '';
 
   if (op.squad) {
     const chip = document.createElement('span');
@@ -312,19 +338,24 @@ function renderOpCard(op, container) {
     metaRow.appendChild(timeEl);
   }
 
-  card.appendChild(metaRow);
-
-  // Op ID: muted, bottom-right, click-to-copy
-  const idLine = document.createElement('div');
-  idLine.className = 'op-id-line';
+  // Op ID line
+  let idLine = card.querySelector('.op-id-line');
+  if (!idLine) {
+    idLine = document.createElement('div');
+    idLine.className = 'op-id-line';
+    idLine.title = 'Click to copy';
+    idLine.onclick = (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(card.dataset.opId).then(() => toast('Copied: ' + card.dataset.opId)).catch(() => {});
+    };
+    card.appendChild(idLine);
+  }
   idLine.textContent = op.id;
-  idLine.title = 'Click to copy';
-  idLine.onclick = (e) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(op.id).then(() => toast('Copied: ' + op.id)).catch(() => {});
-  };
-  card.appendChild(idLine);
+}
 
+// Legacy wrapper for detail-view card rendering (appends to container)
+function renderOpCard(op, container) {
+  const card = createOpCard(op);
   container.appendChild(card);
 }
 
@@ -368,6 +399,10 @@ function renderEmpty(container, text) {
 
 // --- Active list (independent query, frequent polling) ---
 
+// Status display labels and render order for active sub-groups
+const ACTIVE_STATUS_ORDER = ['active', 'queued', 'classifying'];
+const ACTIVE_STATUS_LABELS = { active: 'Running', queued: 'Queued', classifying: 'Classifying' };
+
 async function loadActiveOps() {
   const squad = document.getElementById('filter-squad').value;
   const keyword = document.getElementById('filter-keyword').value;
@@ -382,16 +417,89 @@ async function loadActiveOps() {
     const resp = await fetch(`/api/ops?${params}`);
     const data = await resp.json();
     const ops = data.operations || [];
-    activeList.innerHTML = '';
+
+    // Remove skeletons on first successful load (with 1.5s minimum display)
+    if (!activeFirstLoaded) {
+      const elapsed = Date.now() - initialLoadStarted;
+      const delay = Math.max(0, 1500 - elapsed);
+      if (delay > 0) {
+        await new Promise(r => setTimeout(r, delay));
+      }
+      activeFirstLoaded = true;
+      removeSkeleton(activeList);
+    }
+
     if (ops.length === 0) {
-      renderEmpty(activeList, 'No active operations');
+      activeList.innerHTML = '';
       lastActiveCount = 0;
       updateSectionCounts();
+      checkGlobalEmpty();
       return;
     }
     lastActiveCount = ops.length;
     updateSectionCounts();
-    ops.forEach(op => renderOpCard(op, activeList));
+
+    // Group ops by status
+    const groups = {};
+    for (const op of ops) {
+      const s = op.status || 'active';
+      if (!groups[s]) groups[s] = [];
+      groups[s].push(op);
+    }
+
+    // Build map of existing cards by op.id for reuse
+    const existingCards = {};
+    activeList.querySelectorAll('.op-card[data-op-id]').forEach(c => {
+      existingCards[c.dataset.opId] = c;
+    });
+
+    // Rebuild container with sub-headers, reusing card elements
+    const fragment = document.createDocumentFragment();
+    const usedIds = new Set();
+
+    for (const status of ACTIVE_STATUS_ORDER) {
+      const groupOps = groups[status];
+      if (!groupOps || groupOps.length === 0) continue;
+
+      const header = document.createElement('div');
+      header.className = 'status-subheader';
+      header.textContent = `${ACTIVE_STATUS_LABELS[status] || status} (${groupOps.length})`;
+      fragment.appendChild(header);
+
+      for (const op of groupOps) {
+        usedIds.add(op.id);
+        let card = existingCards[op.id];
+        if (card) {
+          updateOpCard(card, op);
+        } else {
+          card = createOpCard(op);
+        }
+        fragment.appendChild(card);
+      }
+    }
+
+    // Handle any statuses not in ACTIVE_STATUS_ORDER
+    for (const [status, groupOps] of Object.entries(groups)) {
+      if (ACTIVE_STATUS_ORDER.includes(status)) continue;
+      const header = document.createElement('div');
+      header.className = 'status-subheader';
+      header.textContent = `${status} (${groupOps.length})`;
+      fragment.appendChild(header);
+      for (const op of groupOps) {
+        usedIds.add(op.id);
+        let card = existingCards[op.id];
+        if (card) {
+          updateOpCard(card, op);
+        } else {
+          card = createOpCard(op);
+        }
+        fragment.appendChild(card);
+      }
+    }
+
+    activeList.innerHTML = '';
+    activeList.appendChild(fragment);
+    checkGlobalEmpty();
   } catch(e) {
     // Leave previous content intact on transient failure to avoid flicker.
   }
@@ -399,26 +507,97 @@ async function loadActiveOps() {
 
 // --- History list (independent query, refreshes only on user action) ---
 
+// Time bucket computation using local timezone
+function getTimeBucket(isoStr) {
+  if (!isoStr) return 'Earlier';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return 'Earlier';
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - todayStart.getDay());
+
+  if (d >= todayStart) return 'Today';
+  if (d >= yesterdayStart) return 'Yesterday';
+  if (d >= weekStart) return 'This Week';
+  return 'Earlier';
+}
+
+function renderHistoryWithBuckets() {
+  const historyList = document.getElementById('history-list');
+
+  if (historyOpsCache.length === 0) {
+    historyList.innerHTML = '';
+    renderEmpty(historyList, 'No operations');
+    checkGlobalEmpty();
+    return;
+  }
+
+  // Group ops by time bucket
+  const bucketOrder = ['Today', 'Yesterday', 'This Week', 'Earlier'];
+  const buckets = {};
+  for (const op of historyOpsCache) {
+    const ts = op.completed_at || op.created_at;
+    const bucket = getTimeBucket(ts);
+    if (!buckets[bucket]) buckets[bucket] = [];
+    buckets[bucket].push(op);
+  }
+
+  // Build map of existing cards for reuse
+  const existingCards = {};
+  historyList.querySelectorAll('.op-card[data-op-id]').forEach(c => {
+    existingCards[c.dataset.opId] = c;
+  });
+
+  // Rebuild with bucket headers, reusing card elements
+  const fragment = document.createDocumentFragment();
+
+  for (const bucketName of bucketOrder) {
+    const ops = buckets[bucketName];
+    if (!ops || ops.length === 0) continue;
+
+    const header = document.createElement('div');
+    header.className = 'time-bucket-header';
+    header.textContent = `${bucketName} (${ops.length})`;
+    fragment.appendChild(header);
+
+    for (const op of ops) {
+      let card = existingCards[op.id];
+      if (card) {
+        updateOpCard(card, op);
+      } else {
+        card = createOpCard(op);
+      }
+      fragment.appendChild(card);
+    }
+  }
+
+  historyList.innerHTML = '';
+  historyList.appendChild(fragment);
+  checkGlobalEmpty();
+}
+
 async function loadHistoryOps(reset = true) {
   const squad = document.getElementById('filter-squad').value;
   const keyword = document.getElementById('filter-keyword').value;
   const dropdown = document.getElementById('filter-status').value;
 
-  const historyList = document.getElementById('history-list');
-  const loadMoreBtn = document.getElementById('load-more');
   const filter = historyStatusFilter(dropdown);
 
   if (filter === null) {
-    renderEmpty(historyList, 'No history matches the current filter');
+    historyOpsCache = [];
     historyOffset = 0;
     historyTotal = 0;
-    loadMoreBtn.style.display = 'none';
+    renderHistoryWithBuckets();
     return;
   }
 
   if (reset) {
     historyOffset = 0;
-    historyList.innerHTML = '';
+    historyOpsCache = [];
   }
 
   const params = new URLSearchParams({
@@ -432,33 +611,112 @@ async function loadHistoryOps(reset = true) {
   try {
     const resp = await fetch(`/api/ops?${params}`);
     const data = await resp.json();
-    let ops = data.operations || [];
-    // Client-side sub-filter by failure_reason bucket
-    ops = applyBucketFilter(ops, dropdown);
+    const rawOps = data.operations || [];
     historyTotal = data.total || 0;
+
+    // Advance offset by raw page length before client-side filtering
+    historyOffset += rawOps.length;
+
+    // Client-side sub-filter by failure_reason bucket
+    const ops = applyBucketFilter(rawOps, dropdown);
+
     lastHistoryCount = historyTotal;
     updateSectionCounts();
-    ops.forEach(op => renderOpCard(op, historyList));
-    historyOffset += ops.length;
-    // If a non-reset page returned 0 ops while the server still claims more
-    // (e.g. data churned between fetches), reconcile total to current offset
-    // so the Load-More button hides instead of looping on empty pages.
-    if (!reset && ops.length === 0) {
+
+    // Remove skeletons on first successful load (with 1.5s minimum display)
+    if (!historyFirstLoaded) {
+      const elapsed = Date.now() - initialLoadStarted;
+      const delay = Math.max(0, 1500 - elapsed);
+      if (delay > 0) {
+        await new Promise(r => setTimeout(r, delay));
+      }
+      historyFirstLoaded = true;
+      removeSkeleton(document.getElementById('history-list'));
+    }
+
+    // Dedupe and append to cache
+    const existingIds = new Set(historyOpsCache.map(o => o.id));
+    for (const op of ops) {
+      if (!existingIds.has(op.id)) {
+        historyOpsCache.push(op);
+        existingIds.add(op.id);
+      }
+    }
+
+    // If a non-reset page returned 0 raw ops, reconcile total
+    if (!reset && rawOps.length === 0) {
       historyTotal = historyOffset;
     }
-    if (reset && historyOffset === 0) {
-      renderEmpty(historyList, 'No operations');
-    }
-    loadMoreBtn.style.display = historyOffset < historyTotal ? '' : 'none';
+
+    renderHistoryWithBuckets();
+    updateInfiniteScroll();
   } catch(e) {
     if (reset && historyOffset === 0) {
-      renderEmpty(historyList, 'Failed to load history');
+      renderEmpty(document.getElementById('history-list'), 'Failed to load history');
     }
+  } finally {
+    isLoadingHistory = false;
   }
 }
 
 async function loadMore() {
+  if (isLoadingHistory) return;
+  isLoadingHistory = true;
+  showHistorySpinner();
   await loadHistoryOps(false);
+  hideHistorySpinner();
+}
+
+// --- Infinite scroll ---
+
+function showHistorySpinner() {
+  let spinner = document.getElementById('history-spinner');
+  if (!spinner) {
+    spinner = document.createElement('div');
+    spinner.id = 'history-spinner';
+    spinner.className = 'history-spinner';
+    spinner.textContent = 'Loading...';
+    const sentinel = document.getElementById('history-sentinel');
+    sentinel.parentNode.insertBefore(spinner, sentinel);
+  }
+  spinner.style.display = '';
+}
+
+function hideHistorySpinner() {
+  const spinner = document.getElementById('history-spinner');
+  if (spinner) spinner.style.display = 'none';
+}
+
+function updateInfiniteScroll() {
+  const hasMore = historyOffset < historyTotal;
+  if (hasMore) {
+    setupInfiniteScroll();
+  } else {
+    teardownInfiniteScroll();
+  }
+}
+
+function setupInfiniteScroll() {
+  if (historyObserver) return;
+  const sentinel = document.getElementById('history-sentinel');
+  const scrollRoot = document.querySelector('.history-list');
+  if (!sentinel) return;
+  historyObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting && !isLoadingHistory && historyOffset < historyTotal) {
+        loadMore();
+      }
+    }
+  }, { root: scrollRoot, rootMargin: '100px' });
+  historyObserver.observe(sentinel);
+}
+
+function teardownInfiniteScroll() {
+  if (historyObserver) {
+    historyObserver.disconnect();
+    historyObserver = null;
+  }
+  hideHistorySpinner();
 }
 
 // --- Stats (independent fetch and interval) ---
@@ -702,7 +960,7 @@ async function selectOp(op) {
   // Highlight selected card
   document.querySelectorAll('.op-card').forEach(c => c.classList.remove('selected'));
   document.querySelectorAll('.op-card').forEach(c => {
-    if (c.querySelector('.op-id')?.textContent === op.id) c.classList.add('selected');
+    if (c.dataset.opId === op.id) c.classList.add('selected');
   });
 }
 
@@ -838,6 +1096,69 @@ function attachIframeAutoResize(iframe) {
   };
 }
 
+// --- Skeleton loader ---
+
+function renderSkeletonCards(container, count) {
+  for (let i = 0; i < count; i++) {
+    const card = document.createElement('div');
+    card.className = 'skeleton-card';
+    card.innerHTML = '<div class="skeleton-line title"></div><div class="skeleton-line meta"></div><div class="skeleton-line id"></div>';
+    container.appendChild(card);
+  }
+}
+
+function removeSkeleton(container) {
+  container.querySelectorAll('.skeleton-card').forEach(c => c.remove());
+}
+
+function showSkeletons() {
+  const activeList = document.getElementById('active-list');
+  const historyList = document.getElementById('history-list');
+  activeList.innerHTML = '';
+  historyList.innerHTML = '';
+  renderSkeletonCards(activeList, 3);
+  renderSkeletonCards(historyList, 5);
+  initialLoadStarted = Date.now();
+}
+
+// --- Empty state ---
+
+function checkGlobalEmpty() {
+  const activeList = document.getElementById('active-list');
+  const historyList = document.getElementById('history-list');
+
+  // Only check after both sections have loaded at least once
+  if (!activeFirstLoaded || !historyFirstLoaded) return;
+
+  const hasActive = activeList.querySelector('.op-card') !== null;
+  const hasHistory = historyOpsCache.length > 0;
+
+  // Remove any existing empty state
+  const existingEmpty = document.getElementById('global-empty-state');
+  if (existingEmpty) existingEmpty.remove();
+
+  if (!hasActive && !hasHistory) {
+    const emptyDiv = document.createElement('div');
+    emptyDiv.id = 'global-empty-state';
+    emptyDiv.className = 'empty-state';
+    emptyDiv.innerHTML = `
+      <div class="empty-icon">\u26A1</div>
+      <div class="empty-title">Nothing here yet</div>
+      <div class="empty-hint">swat dispatch "fix the auth bug"</div>
+      <button class="copy-btn" id="copy-cmd-btn">Copy command</button>
+    `;
+    // Insert after active list, before history title
+    activeList.innerHTML = '';
+    activeList.appendChild(emptyDiv);
+
+    document.getElementById('copy-cmd-btn').addEventListener('click', () => {
+      navigator.clipboard.writeText('swat dispatch "fix the auth bug"')
+        .then(() => toast('Command copied!'))
+        .catch(() => {});
+    });
+  }
+}
+
 // --- Filters ---
 // Filter changes refresh BOTH lists once (each via its own independent query).
 // Subsequent active polling never re-runs the history query.
@@ -845,6 +1166,7 @@ let filterTimer;
 function onFilterChange() {
   clearTimeout(filterTimer);
   filterTimer = setTimeout(() => {
+    teardownInfiniteScroll();
     loadActiveOps();
     loadHistoryOps(true);
     loadStats();
@@ -855,6 +1177,7 @@ document.getElementById('filter-status').addEventListener('change', onFilterChan
 document.getElementById('filter-keyword').addEventListener('input', onFilterChange);
 
 // --- Init ---
+showSkeletons();
 loadSquads();
 loadActiveOps();
 loadHistoryOps(true);
