@@ -1,5 +1,5 @@
-github.com/LangSensei/swat v1.2.0 h1:C9BAPXksK+zzsL8jalqm/4inJD9A4FjmyuLI3thThs4=
-github.com/LangSensei/swat v1.2.0/go.mod h1:nRyrxrqnujB0vzgSYvOmwjgTJjmAf7/QNVodSOOUBFw=
+github.com/LangSensei/swat v1.2.2 h1:C5icPw+7cTVDC3wtwhaK12ZXtR5nthTI4d9bZ5bFuro=
+github.com/LangSensei/swat v1.2.2/go.mod h1:nRyrxrqnujB0vzgSYvOmwjgTJjmAf7/QNVodSOOUBFw=
 github.com/UserExistsError/conpty v0.1.4 h1:+3FhJhiqhyEJa+K5qaK3/w6w+sN3Nh9O9VbJyBS02to=
 github.com/UserExistsError/conpty v0.1.4/go.mod h1:PDglKIkX3O/2xVk0MV9a6bCWxRmPVfxqZoTG/5sSd9I=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=

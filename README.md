@@ -64,3 +64,21 @@ The SWAT Dashboard features a Go backend with embedded static files. It serves a
 - **Backend:** Go, `gorilla/websocket`, `creack/pty`, `conpty`
 - **Frontend:** xterm.js
 - **Integration:** `swat/commander/operation`
+
+## Design System
+
+This project follows **GitHub Primer Dark** as the design contract. All colors must use the CSS custom properties defined in `static/style.css` (e.g. `--color-canvas-default`, `--color-fg-default`, `--color-accent-fg`). **No ad-hoc hex color literals** — future contributors must use the established tokens.
+
+Key tokens:
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--color-canvas-default` | `#0d1117` | Page background |
+| `--color-fg-default` | `#e6edf3` | Primary text |
+| `--color-fg-muted` | `#7d8590` | Secondary text |
+| `--color-accent-fg` | `#58a6ff` | Links, accent |
+| `--color-success-fg` | `#3fb950` | Active/success |
+| `--color-danger-fg` | `#f85149` | Errors, crashed |
+| `--color-attention-fg` | `#d29922` | Warnings, setup |
+| `--color-done-fg` | `#a371f7` | Config needed |
+
+Monospace font stack: `'SF Mono', 'JetBrains Mono', 'Cascadia Code', Consolas, ui-monospace, monospace`
