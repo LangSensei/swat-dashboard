@@ -1,23 +1,49 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"testing"
 )
+
+// TestHelperGeminiSeed is a test helper process used by gemini seed tests.
+// It prints the value of GO_HELPER_OUTPUT and exits. It is invoked as a
+// subprocess via os.Args[0] so tests never need a real gemini binary.
+func TestHelperGeminiSeed(t *testing.T) {
+	if os.Getenv("GO_HELPER_GEMINI_SEED") != "1" {
+		return
+	}
+	fmt.Print(os.Getenv("GO_HELPER_OUTPUT"))
+	os.Exit(0)
+}
+
+// stubGeminiCommand overrides geminiSeedCommand for the duration of a test.
+// The fake command runs the TestHelperGeminiSeed helper process which prints
+// output. This is portable across Linux and Windows (no shell scripts needed).
+func stubGeminiCommand(t *testing.T, output string) {
+	t.Helper()
+	orig := geminiSeedCommand
+	t.Cleanup(func() { geminiSeedCommand = orig })
+	geminiSeedCommand = func(ctx context.Context, prompt string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperGeminiSeed$")
+		cmd.Env = append(os.Environ(),
+			"GO_HELPER_GEMINI_SEED=1",
+			"GO_HELPER_OUTPUT="+output,
+		)
+		return cmd
+	}
+}
 
 // TestSeedGeminiSessionParsesInitEvent verifies that seedGeminiSession
 // correctly parses the init event from gemini's stream-json output.
 func TestSeedGeminiSessionParsesInitEvent(t *testing.T) {
-	// Override swatDir so tests don't depend on ~/.swat existing.
 	origSwatDir := swatDir
 	swatDir = t.TempDir()
 	t.Cleanup(func() { swatDir = origSwatDir })
 
-	// Create a fake "gemini" script that outputs stream-json with an init event.
-	dir := t.TempDir()
 	wantID := "22846597-45c3-4478-ac78-031382fdb822"
 	initEvt, _ := json.Marshal(map[string]string{
 		"type":       "init",
@@ -25,15 +51,7 @@ func TestSeedGeminiSessionParsesInitEvent(t *testing.T) {
 		"session_id": wantID,
 		"model":      "auto-gemini-3",
 	})
-	script := fmt.Sprintf("#!/bin/sh\necho '%s'\n", string(initEvt))
-	scriptPath := filepath.Join(dir, "gemini")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-
-	// Put the fake gemini on PATH.
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+":"+origPath)
+	stubGeminiCommand(t, string(initEvt)+"\n")
 
 	id, err := seedGeminiSession("test prompt")
 	if err != nil {
@@ -51,15 +69,7 @@ func TestSeedGeminiSessionHandlesNoInitEvent(t *testing.T) {
 	swatDir = t.TempDir()
 	t.Cleanup(func() { swatDir = origSwatDir })
 
-	dir := t.TempDir()
-	script := "#!/bin/sh\necho '{\"type\":\"output\",\"text\":\"hello\"}'\n"
-	scriptPath := filepath.Join(dir, "gemini")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+":"+origPath)
+	stubGeminiCommand(t, `{"type":"output","text":"hello"}`+"\n")
 
 	_, err := seedGeminiSession("test prompt")
 	if err == nil {
@@ -74,20 +84,9 @@ func TestSeedGeminiSessionHandlesMultipleLines(t *testing.T) {
 	swatDir = t.TempDir()
 	t.Cleanup(func() { swatDir = origSwatDir })
 
-	dir := t.TempDir()
 	wantID := "abcdef12-3456-4789-abcd-ef0123456789"
-	script := fmt.Sprintf(`#!/bin/sh
-echo '{"type":"status","message":"connecting"}'
-echo '{"type":"init","session_id":"%s","model":"gemini-3"}'
-echo '{"type":"output","text":"response"}'
-`, wantID)
-	scriptPath := filepath.Join(dir, "gemini")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+":"+origPath)
+	output := fmt.Sprintf("{\"type\":\"status\",\"message\":\"connecting\"}\n{\"type\":\"init\",\"session_id\":\"%s\",\"model\":\"gemini-3\"}\n{\"type\":\"output\",\"text\":\"response\"}\n", wantID)
+	stubGeminiCommand(t, output)
 
 	id, err := seedGeminiSession("test prompt")
 	if err != nil {

@@ -368,14 +368,20 @@ const seedGeminiSessionTimeout = 30 * time.Second
 // Tests override this to avoid depending on ~/.swat existing.
 var swatDir = filepath.Join(homeDir(), ".swat")
 
+// geminiSeedCommand builds the exec.Cmd for the gemini seed subprocess.
+// Tests override this to avoid requiring a real gemini binary.
+var geminiSeedCommand = func(ctx context.Context, prompt string) *exec.Cmd {
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--skip-trust"}
+	return exec.CommandContext(ctx, "gemini", args...)
+}
+
 // seedGeminiSession runs gemini non-interactively with stream-json output to
 // create a new session and extract the session_id from the init event.
 func seedGeminiSession(prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), seedGeminiSessionTimeout)
 	defer cancel()
 
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--skip-trust"}
-	cmd := exec.CommandContext(ctx, "gemini", args...)
+	cmd := geminiSeedCommand(ctx, prompt)
 	cmd.Dir = swatDir
 
 	stdout, err := cmd.StdoutPipe()
