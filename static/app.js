@@ -347,11 +347,9 @@ function parseFilterValue(dropdown) {
 // Compute the status filter for the history list.
 // - No dropdown filter → all terminal statuses
 // - Dropdown matches a terminal status → that single status
-// - Dropdown matches an active-bucket status → treat as no filter (show all terminal)
 function historyStatusFilter(dropdown) {
   const { status } = parseFilterValue(dropdown);
   if (!status) return HISTORY_STATUSES;
-  if (status === 'active' || status === 'queued') return HISTORY_STATUSES;
   return status;
 }
 
