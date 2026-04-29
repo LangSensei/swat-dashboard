@@ -540,12 +540,8 @@ async function selectOp(op) {
   const completedRel = op.completed_at ? relativeTime(op.completed_at) : 'running';
 
   // #1 Markdown render brief/summary
-  const briefHtml = (op.brief && typeof marked !== 'undefined')
-    ? (typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(marked.parse(op.brief)) : marked.parse(op.brief))
-    : escapeHtml(op.brief || '\u2014');
-  const summaryHtml = (op.summary && typeof marked !== 'undefined')
-    ? (typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(marked.parse(op.summary)) : marked.parse(op.summary))
-    : '';
+  const briefHtml = renderMarkdown(op.brief);
+  const summaryHtml = op.summary ? renderMarkdown(op.summary) : '';
 
   // #2 Sidebar metadata layout (right sidebar) + main column
   let html = '<div class="detail-layout">';
@@ -608,7 +604,8 @@ async function selectOp(op) {
     op.references.forEach(ref => {
       const val = escapeHtml(ref.value);
       if (ref.type === 'operation') {
-        refsInner += `<li><a href="#" class="ref-link" data-op-id="${val}">${val}</a></li>`;
+        const opId = escapeHtml(extractOpId(ref.value));
+        refsInner += `<li><a href="#" class="ref-link" data-op-id="${opId}">${opId}</a></li>`;
       } else {
         refsInner += `<li><span class="ref-type">${escapeHtml(ref.type)}</span>: ${val}</li>`;
       }
@@ -751,8 +748,7 @@ async function loadFileContent(opId, filename, tabsDiv) {
     const ext = filename.split('.').pop().toLowerCase();
 
     if (ext === 'md' && typeof marked !== 'undefined') {
-      const rawHtml = marked.parse(text);
-      const sanitized = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
+      const sanitized = renderMarkdown(text);
       contentArea.innerHTML = `<div class="md-content">${sanitized}</div>`;
     } else if (ext === 'html' || ext === 'htm') {
       const fileUrl = `/api/file?op=${encodeURIComponent(opId)}&file=${encodeURIComponent(filename)}`;
@@ -775,6 +771,23 @@ async function loadFileContent(opId, filename, tabsDiv) {
 
 function escapeHtml(str) {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Render markdown to sanitized HTML. Falls back to escaped plain text when
+// DOMPurify is unavailable so unsanitized marked output is never injected.
+function renderMarkdown(text) {
+  if (!text || typeof marked === 'undefined') return escapeHtml(text || '\u2014');
+  const raw = marked.parse(text);
+  if (typeof DOMPurify !== 'undefined') return DOMPurify.sanitize(raw);
+  return escapeHtml(text);
+}
+
+// Extract an operation ID (YYYYMMDD-hex) from a reference value that may be
+// a relative filesystem path like "../../squad/operations/20260317-b0320d3a/".
+function extractOpId(refValue) {
+  if (!refValue) return refValue;
+  const match = refValue.match(/(\d{8}-[0-9a-f]+)/);
+  return match ? match[1] : refValue;
 }
 
 // Resize iframe to its content height so it scrolls with the parent
