@@ -719,6 +719,8 @@ async function refreshHistoryOps() {
   const filter = historyStatusFilter(dropdown);
   if (filter === null) return;
 
+  isLoadingHistory = true;
+
   const params = new URLSearchParams({ limit: '20', offset: '0', status: filter });
   if (squad) params.set('squad', squad);
   if (keyword) params.set('q', keyword);
@@ -735,24 +737,25 @@ async function refreshHistoryOps() {
 
     // Merge: update existing items in-place, prepend genuinely new ones
     const existingIds = new Set(historyOpsCache.map(o => o.id));
-    let insertedCount = 0;
+    const newItems = [];
     for (const op of ops) {
       if (!existingIds.has(op.id)) {
-        historyOpsCache.unshift(op);
+        newItems.push(op);
         existingIds.add(op.id);
-        insertedCount++;
       } else {
         const idx = historyOpsCache.findIndex(o => o.id === op.id);
         if (idx !== -1) historyOpsCache[idx] = op;
       }
     }
+    if (newItems.length) historyOpsCache.unshift(...newItems);
 
     // Keep pagination offset aligned so "Load more" fetches the right slice
-    historyOffset += insertedCount;
+    historyOffset += newItems.length;
 
     renderHistoryWithBuckets();
     updateInfiniteScroll();
   } catch(e) { /* silent on auto-refresh */ }
+  finally { isLoadingHistory = false; }
 }
 
 async function loadMore() {
