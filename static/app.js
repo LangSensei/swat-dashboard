@@ -707,6 +707,54 @@ async function loadHistoryOps(reset = true) {
   }
 }
 
+// Auto-refresh variant: fetches the first page and merges into the
+// existing cache so newly completed operations appear without resetting
+// scroll position or pagination state.
+async function refreshHistoryOps() {
+  if (isLoadingHistory) return;
+
+  const squad = document.getElementById('filter-squad').value;
+  const keyword = document.getElementById('filter-keyword').value;
+  const dropdown = document.getElementById('filter-status').value;
+  const filter = historyStatusFilter(dropdown);
+  if (filter === null) return;
+
+  const params = new URLSearchParams({ limit: '20', offset: '0', status: filter });
+  if (squad) params.set('squad', squad);
+  if (keyword) params.set('q', keyword);
+
+  try {
+    const resp = await fetch(`/api/ops?${params}`);
+    const data = await resp.json();
+    const rawOps = data.operations || [];
+    historyTotal = data.total || 0;
+
+    const ops = applyBucketFilter(rawOps, dropdown);
+    lastHistoryCount = historyTotal;
+    updateSectionCounts();
+
+    // Merge: update existing items in-place, prepend genuinely new ones
+    const existingIds = new Set(historyOpsCache.map(o => o.id));
+    let insertedCount = 0;
+    for (const op of ops) {
+      if (!existingIds.has(op.id)) {
+        historyOpsCache.unshift(op);
+        existingIds.add(op.id);
+        insertedCount++;
+      } else {
+        const idx = historyOpsCache.findIndex(o => o.id === op.id);
+        if (idx !== -1) historyOpsCache[idx] = op;
+      }
+    }
+
+    // Keep pagination offset aligned so "Load more" fetches the right slice
+    historyOffset += insertedCount;
+
+    renderHistoryWithBuckets();
+    updateInfiniteScroll();
+  } catch(e) { /* silent on auto-refresh */ }
+}
+
 async function loadMore() {
   if (isLoadingHistory) return;
   isLoadingHistory = true;
@@ -1531,12 +1579,12 @@ loadStats();
 initTerminal();
 loadRuntimes();
 
-// Independent refresh policies:
-//   - active list polls frequently (live data)
-//   - history list never auto-polls; user pulls via filter change or "Load more"
-//   - stats refresh on a slower cadence
-setInterval(loadActiveOps, 5000);
-setInterval(loadStats, 10000);
+// Synchronized refresh: all lists update together so operations
+// transitioning from active → history don't appear to vanish.
+const REFRESH_INTERVAL = 5000;
+setInterval(loadActiveOps, REFRESH_INTERVAL);
+setInterval(refreshHistoryOps, REFRESH_INTERVAL);
+setInterval(loadStats, REFRESH_INTERVAL);
 
 async function loadRuntimes(skipAutoConnect) {
   try {
