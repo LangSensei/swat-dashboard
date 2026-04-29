@@ -38,15 +38,22 @@ var upgrader = websocket.Upgrader{
 
 // OpView is a lightweight UI view of an operation
 type OpView struct {
-	ID            string `json:"id"`
-	Squad         string `json:"squad"`
-	Status        string `json:"status"`
-	Brief         string `json:"brief"`
-	Summary       string `json:"summary"`
-	FailureReason string `json:"failure_reason,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	CompletedAt   string `json:"completed_at,omitempty"`
-	Elapsed       string `json:"elapsed,omitempty"`
+	ID            string    `json:"id"`
+	Squad         string    `json:"squad"`
+	Status        string    `json:"status"`
+	Brief         string    `json:"brief"`
+	Summary       string    `json:"summary"`
+	FailureReason string    `json:"failure_reason,omitempty"`
+	CreatedAt     string    `json:"created_at"`
+	CompletedAt   string    `json:"completed_at,omitempty"`
+	Elapsed       string    `json:"elapsed,omitempty"`
+	References    []RefView `json:"references,omitempty"`
+}
+
+// RefView is a typed reference for the UI
+type RefView struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 func opToView(op *operation.Operation) OpView {
@@ -59,6 +66,9 @@ func opToView(op *operation.Operation) OpView {
 	}
 	if op.FailureReason != nil {
 		v.FailureReason = *op.FailureReason
+	}
+	for _, ref := range op.References {
+		v.References = append(v.References, RefView{Type: ref.Type, Value: ref.Value})
 	}
 	if !op.CreatedAt.IsZero() {
 		v.CreatedAt = op.CreatedAt.Format(time.RFC3339)
