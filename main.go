@@ -260,6 +260,16 @@ var (
 // fallback (and by /api/runtimes for stable client rendering).
 var runtimeOrder = []string{"copilot", "gemini"}
 
+// resumeSupported indicates which runtimes support `--resume <guid>` to
+// reattach to an existing conversation session. Copilot creates the session on
+// first use (create-on-miss); Gemini only attaches to existing sessions — a
+// freshly-minted UUID that has never been seen before causes an immediate
+// failure. See issue #32.
+var resumeSupported = map[string]bool{
+	"copilot": true,
+	"gemini":  false,
+}
+
 // Test-only hooks. These are package vars so individual tests can override
 // them to exercise concurrency-sensitive paths without depending on a real
 // CLI being installed. Production callers are unaffected.
@@ -379,7 +389,7 @@ func createPTYSession(runtimeName, prompt string) (*platformPTY, error) {
 	// history; `-i` injects the operator-level system prompt). Issue #29
 	// confirms this orthogonality.
 	var args []string
-	if sessionStore != nil {
+	if resumeSupported[runtimeName] && sessionStore != nil {
 		guid := sessionStore.GUIDFor(runtimeName)
 		if guid != "" {
 			args = append(args, "--resume", guid)
