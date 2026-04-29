@@ -1036,10 +1036,10 @@ async function renderPrimaryContent(op, cats, files, container) {
       await renderFailedContent(op, cats, files, container);
       break;
     case 'active':
-    case 'classifying':
       await renderActiveContent(op, cats, files, container);
       break;
     case 'queued':
+    case 'classifying':
       await renderQueuedContent(op, cats, files, container);
       break;
     default:
@@ -1282,11 +1282,11 @@ function getPrimaryShownFiles(op) {
   if (op.status === 'failed') {
     shown.add('progress.md');
   }
-  if (op.status === 'active' || op.status === 'classifying') {
+  if (op.status === 'active') {
     shown.add('progress.md');
     shown.add('plan.md');
   }
-  if (op.status === 'queued') {
+  if (op.status === 'queued' || op.status === 'classifying') {
     shown.add('OPERATION.md');
   }
   return shown;

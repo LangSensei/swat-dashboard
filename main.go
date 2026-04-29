@@ -653,12 +653,13 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // dashCommander is a lazily-initialised Commander used by cancel/retry endpoints.
+var dashCommanderOnce sync.Once
 var dashCommander *commander.Commander
 
 func getDashCommander() *commander.Commander {
-	if dashCommander == nil {
+	dashCommanderOnce.Do(func() {
 		dashCommander = commander.New("", "desktop")
-	}
+	})
 	return dashCommander
 }
 

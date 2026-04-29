@@ -58,7 +58,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .op-squad { font-size: 13px; font-weight: 500; margin: 2px 0; }
 .op-meta { font-size: 11px; color: var(--color-fg-muted); display: flex; gap: 8px; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-.status-dot.active, .status-dot.queued { background: var(--color-success-fg); animation: pulse 2s infinite; }
+.status-dot.active, .status-dot.queued, .status-dot.classifying { background: var(--color-success-fg); animation: pulse 2s infinite; }
 .status-dot.completed { background: var(--color-fg-muted); }
 .status-dot.failed { background: var(--color-danger-fg); }
 .status-dot.cancelled { background: var(--color-fg-muted); }
