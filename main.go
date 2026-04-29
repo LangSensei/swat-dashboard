@@ -22,7 +22,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LangSensei/swat/commander"
+	"crypto/rand"
+
+	"github.com/LangSensei/swat/commander/intake"
 	"github.com/LangSensei/swat/commander/operation"
 	"github.com/gorilla/websocket"
 )
@@ -652,15 +654,28 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(content))
 }
 
-// dashCommander is a lazily-initialised Commander used by cancel/retry endpoints.
-var dashCommanderOnce sync.Once
-var dashCommander *commander.Commander
+// generateOpID creates a unique operation ID in the same format as commander.GenerateOpID.
+func generateOpID() string {
+	now := time.Now().UTC()
+	b := make([]byte, 4)
+	rand.Read(b)
+	return fmt.Sprintf("%s-%x", now.Format("20060102"), b)
+}
 
-func getDashCommander() *commander.Commander {
-	dashCommanderOnce.Do(func() {
-		dashCommander = commander.New("", "desktop")
-	})
-	return dashCommander
+// handleOpGet returns a single operation by ID.
+func handleOpGet(w http.ResponseWriter, r *http.Request) {
+	opID := r.URL.Query().Get("op")
+	if opID == "" {
+		http.Error(w, "missing op", 400)
+		return
+	}
+	op, err := operation.Find(opID)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(opToView(op))
 }
 
 // handleOpCancel cancels an active/queued/classifying operation.
@@ -674,8 +689,28 @@ func handleOpCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing op", 400)
 		return
 	}
-	if err := getDashCommander().Cancel(opID); err != nil {
-		http.Error(w, err.Error(), 500)
+	op, err := operation.Find(opID)
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	if op.Status != "active" && op.Status != "queued" && op.Status != "classifying" {
+		http.Error(w, "operation not cancellable (status: "+op.Status+")", 400)
+		return
+	}
+	now := time.Now().UTC()
+	reason := "cancelled_by_user"
+	if (op.Status == "active" || op.Status == "classifying") && op.PID > 0 {
+		if p, err := os.FindProcess(op.PID); err == nil {
+			p.Signal(os.Kill)
+		}
+	}
+	op.Status = "failed"
+	op.FailedAt = &now
+	op.FailureReason = &reason
+	op.PID = 0
+	if err := operation.Save(op); err != nil {
+		http.Error(w, "failed to save: "+err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -698,9 +733,31 @@ func handleOpRetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
-	newOp, err := getDashCommander().Dispatch(op.Brief, op.Details)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
+	if op.Status != "failed" && op.Status != "completed" && op.Status != "cancelled" {
+		http.Error(w, "operation not retryable (status: "+op.Status+")", 400)
+		return
+	}
+	now := time.Now().UTC()
+	newOp := &operation.Operation{
+		OperationID: generateOpID(),
+		Brief:       op.Brief,
+		Details:     op.Details,
+		Status:      "queued",
+		CreatedAt:   now,
+	}
+	if err := operation.Create(newOp); err != nil {
+		http.Error(w, "create failed: "+err.Error(), 500)
+		return
+	}
+	if err := intake.CreateImmediate(newOp.Brief, newOp.Details, newOp.OperationID); err != nil {
+		// Clean up orphaned operation
+		failReason := "intake_create_failed"
+		failNow := time.Now().UTC()
+		newOp.Status = "failed"
+		newOp.FailedAt = &failNow
+		newOp.FailureReason = &failReason
+		operation.Save(newOp)
+		http.Error(w, "retry failed: "+err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -934,6 +991,7 @@ func main() {
 	// API routes
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/ops", handleOps)
+	http.HandleFunc("/api/ops/get", handleOpGet)
 	http.HandleFunc("/api/squads", handleSquads)
 	http.HandleFunc("/api/files", handleOpFiles)
 	http.HandleFunc("/api/file", handleOpFile)

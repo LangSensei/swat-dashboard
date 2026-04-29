@@ -841,6 +841,9 @@ function categorizeFiles(files) {
 
 async function cancelOp(opId) {
   if (!confirm('Cancel operation ' + opId + '?')) return;
+  stopDetailRefresh();
+  const btn = document.querySelector('.action-btn.danger');
+  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling\u2026'; }
   try {
     const resp = await fetch('/api/ops/cancel?op=' + encodeURIComponent(opId), { method: 'POST' });
     if (resp.ok) {
@@ -848,13 +851,14 @@ async function cancelOp(opId) {
       loadActiveOps();
       loadHistoryOps(true);
       loadStats();
-      // Refresh detail
       if (selectedOp === opId) refreshSelectedDetail();
     } else {
       toast('Cancel failed: ' + await resp.text(), 'error');
     }
   } catch (e) {
     toast('Cancel failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
   }
 }
 
@@ -907,31 +911,28 @@ document.addEventListener('visibilitychange', () => {
 async function refreshSelectedDetail() {
   if (!selectedOp || !selectedOpData) return;
   try {
-    // Fetch fresh op data via the ops API with keyword search
-    const resp = await fetch('/api/ops?q=' + encodeURIComponent(selectedOp) + '&limit=100');
-    const data = await resp.json();
-    const freshOp = (data.operations || []).find(o => o.id === selectedOp);
-    if (freshOp) {
-      // Status changed? Full re-render
-      if (freshOp.status !== selectedOpData.status) {
-        selectOp(freshOp);
-        return;
-      }
-      selectedOpData = freshOp;
-      // Refresh primary content files for active ops
-      if (freshOp.status === 'active' || freshOp.status === 'classifying') {
-        const progressArea = document.getElementById('primary-progress-area');
-        if (progressArea) {
-          try {
-            const fResp = await fetch('/api/file?op=' + encodeURIComponent(freshOp.id) + '&file=progress.md');
-            if (fResp.ok) {
-              const text = await fResp.text();
-              progressArea.innerHTML = '<div class="md-content">' + renderMarkdown(text) + '</div>';
-              // Auto-scroll to bottom
-              progressArea.scrollTop = progressArea.scrollHeight;
-            }
-          } catch (e) {}
-        }
+    const resp = await fetch('/api/ops/get?op=' + encodeURIComponent(selectedOp));
+    if (!resp.ok) return;
+    const freshOp = await resp.json();
+    // Status changed? Full re-render
+    if (freshOp.status !== selectedOpData.status) {
+      selectOp(freshOp);
+      return;
+    }
+    selectedOpData = freshOp;
+    // Refresh primary content files for active ops
+    if (freshOp.status === 'active' || freshOp.status === 'classifying') {
+      const progressArea = document.getElementById('primary-progress-area');
+      if (progressArea) {
+        try {
+          const fResp = await fetch('/api/file?op=' + encodeURIComponent(freshOp.id) + '&file=progress.md');
+          if (fResp.ok) {
+            const text = await fResp.text();
+            progressArea.innerHTML = '<div class="md-content">' + renderMarkdown(text) + '</div>';
+            // Auto-scroll to bottom
+            progressArea.scrollTop = progressArea.scrollHeight;
+          }
+        } catch (e) {}
       }
     }
   } catch (e) {}
