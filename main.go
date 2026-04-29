@@ -22,9 +22,6 @@ import (
 	"syscall"
 	"time"
 
-	"crypto/rand"
-
-	"github.com/LangSensei/swat/commander/intake"
 	"github.com/LangSensei/swat/commander/operation"
 	"github.com/gorilla/websocket"
 )
@@ -654,13 +651,6 @@ func handleOpFile(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(content))
 }
 
-// generateOpID creates a unique operation ID in the same format as commander.GenerateOpID.
-func generateOpID() string {
-	now := time.Now().UTC()
-	b := make([]byte, 4)
-	rand.Read(b)
-	return fmt.Sprintf("%s-%x", now.Format("20060102"), b)
-}
 
 // handleOpGet returns a single operation by ID.
 func handleOpGet(w http.ResponseWriter, r *http.Request) {
@@ -684,37 +674,8 @@ func handleOpCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	opID := r.URL.Query().Get("op")
-	if opID == "" {
-		http.Error(w, "missing op", 400)
-		return
-	}
-	op, err := operation.Find(opID)
-	if err != nil {
-		http.Error(w, "not found", 404)
-		return
-	}
-	if op.Status != "active" && op.Status != "queued" && op.Status != "classifying" {
-		http.Error(w, "operation not cancellable (status: "+op.Status+")", 400)
-		return
-	}
-	now := time.Now().UTC()
-	reason := "cancelled_by_user"
-	if (op.Status == "active" || op.Status == "classifying") && op.PID > 0 {
-		if p, err := os.FindProcess(op.PID); err == nil {
-			p.Signal(os.Kill)
-		}
-	}
-	op.Status = "failed"
-	op.FailedAt = &now
-	op.FailureReason = &reason
-	op.PID = 0
-	if err := operation.Save(op); err != nil {
-		http.Error(w, "failed to save: "+err.Error(), 500)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+	// TODO: implement via swat_cancel MCP call
+	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
 // handleOpRetry dispatches a new operation with the same brief/details as the original.
@@ -723,45 +684,8 @@ func handleOpRetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	opID := r.URL.Query().Get("op")
-	if opID == "" {
-		http.Error(w, "missing op", 400)
-		return
-	}
-	op, err := operation.Find(opID)
-	if err != nil {
-		http.Error(w, "not found", 404)
-		return
-	}
-	if op.Status != "failed" && op.Status != "completed" && op.Status != "cancelled" {
-		http.Error(w, "operation not retryable (status: "+op.Status+")", 400)
-		return
-	}
-	now := time.Now().UTC()
-	newOp := &operation.Operation{
-		OperationID: generateOpID(),
-		Brief:       op.Brief,
-		Details:     op.Details,
-		Status:      "queued",
-		CreatedAt:   now,
-	}
-	if err := operation.Create(newOp); err != nil {
-		http.Error(w, "create failed: "+err.Error(), 500)
-		return
-	}
-	if err := intake.CreateImmediate(newOp.Brief, newOp.Details, newOp.OperationID); err != nil {
-		// Clean up orphaned operation
-		failReason := "intake_create_failed"
-		failNow := time.Now().UTC()
-		newOp.Status = "failed"
-		newOp.FailedAt = &failNow
-		newOp.FailureReason = &failReason
-		operation.Save(newOp)
-		http.Error(w, "retry failed: "+err.Error(), 500)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(opToView(newOp))
+	// TODO: implement via swat_dispatch MCP call
+	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
 func handleRuntimes(w http.ResponseWriter, r *http.Request) {
