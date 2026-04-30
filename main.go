@@ -567,13 +567,34 @@ func handleSquads(w http.ResponseWriter, r *http.Request) {
 }
 
 // opDir returns the filesystem path for a given operation ID.
+// It checks the assigned squad directory first, then falls back to _unclassified
+// (where operations reside during the classify phase).
 func opDir(opID string) (string, error) {
 	op, err := operation.Find(opID)
 	if err != nil {
 		return "", err
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".swat", "squads", op.Squad, "operations", opID), nil
+
+	// Primary path: the assigned squad's operation directory
+	if op.Squad != "" {
+		primary := filepath.Join(home, ".swat", "squads", op.Squad, "operations", opID)
+		if _, err := os.Stat(primary); err == nil {
+			return primary, nil
+		}
+	}
+
+	// Fallback: operation may still be in _unclassified during classify phase
+	fallback := filepath.Join(home, ".swat", "squads", "_unclassified", "operations", opID)
+	if _, err := os.Stat(fallback); err == nil {
+		return fallback, nil
+	}
+
+	// Neither exists — return the primary path (will trigger 404 downstream)
+	if op.Squad != "" {
+		return filepath.Join(home, ".swat", "squads", op.Squad, "operations", opID), nil
+	}
+	return fallback, nil
 }
 
 // handleOpFiles returns a JSON array of relative file paths in the operation directory,
